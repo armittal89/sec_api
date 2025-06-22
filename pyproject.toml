@@ -1,0 +1,32 @@
+# /Users/armittal/sec_api/pyproject.toml
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sec-financial-data" # Choose a unique name for PyPI
+version = "0.1.0"
+authors = [
+  { name="Arun Mittal", email="arun.mittal.sjsu@gmail.com" },
+]
+description = "A Python package to retrieve financial data from SEC EDGAR."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "requests>=2.20.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/armittal89/sec_api"
+"Bug Tracker" = "https://github.com/armittal89/sec_api/issues"
+
+[tool.setuptools]
+license-files = ["LICENSE"]
