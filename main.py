@@ -19,64 +19,59 @@ def main():
         print(f"Could not find CIK for {symbol}")
         return # Exit if CIK not found
 
-    # --- Income Statement Examples ---
-    print(f"\n--- Getting Income Statement for {symbol} (ALL, limit 2) ---")
-    income_statement_all = helper.get_income_statement(symbol, limit=2, report_type="ALL")
-    if income_statement_all:
-        print(f"Found {len(income_statement_all)} reports.")
-        print(json.dumps(income_statement_all, indent=2))
-    else:
-        print(f"No income statement data found for {symbol}")
-
-    print(f"\n--- Getting Income Statement for {symbol} (10-K, limit 2) ---")
-    income_statement_10k = helper.get_income_statement(symbol, limit=2, report_type="10-K")
+    # --- Income Statement 10-K Only ---
+    print(f"\n--- Getting Income Statement for {symbol} (10-K, limit 5) ---")
+    income_statement_10k = helper.get_income_statement(symbol, limit=5, report_type="10-K")
     if income_statement_10k:
         print(f"Found {len(income_statement_10k)} 10-K reports.")
         print(json.dumps(income_statement_10k, indent=2))
     else:
         print(f"No 10-K income statement data found for {symbol}")
 
-    print(f"\n--- Getting Income Statement for {symbol} (10-Q, limit 2) ---")
-    income_statement_10q = helper.get_income_statement(symbol, limit=2, report_type="10-Q")
-    if income_statement_10q:
-        print(f"Found {len(income_statement_10q)} 10-Q reports.")
-        print(json.dumps(income_statement_10q, indent=2))
-    else:
-        print(f"No 10-Q income statement data found for {symbol}")
-
-    # --- Balance Sheet Examples ---
-    print(f"\n--- Getting Balance Sheet for {symbol} (ALL, limit 2) ---")
-    balance_sheet_all = helper.get_balance_sheet(symbol, limit=2, report_type="ALL")
-    if balance_sheet_all:
-        print(f"Found {len(balance_sheet_all)} reports.")
-        print(json.dumps(balance_sheet_all, indent=2))
-    else:
-        print(f"No balance sheet data found for {symbol}")
-
-    print(f"\n--- Getting Balance Sheet for {symbol} (10-K, limit 2) ---")
-    balance_sheet_10k = helper.get_balance_sheet(symbol, limit=2, report_type="10-K")
+    # --- Balance Sheet 10-K Only ---
+    print(f"\n--- Getting Balance Sheet for {symbol} (10-K, limit 5) ---")
+    balance_sheet_10k = helper.get_balance_sheet(symbol, limit=5, report_type="10-K")
     if balance_sheet_10k:
         print(f"Found {len(balance_sheet_10k)} 10-K reports.")
         print(json.dumps(balance_sheet_10k, indent=2))
     else:
         print(f"No 10-K balance sheet data found for {symbol}")
 
-    print(f"\n--- Getting Balance Sheet for {symbol} (10-Q, limit 2) ---")
-    balance_sheet_10q = helper.get_balance_sheet(symbol, limit=2, report_type="10-Q")
+    # --- Cash Flow Statement 10-K Only ---
+    print(f"\n--- Getting Cash Flow Statement for {symbol} (10-K, limit 5) ---")
+    cash_flow_10k = helper.get_cash_flow_statement(symbol, limit=5, report_type="10-K")
+    if cash_flow_10k:
+        print(f"Found {len(cash_flow_10k)} 10-K reports.")
+        print(json.dumps(cash_flow_10k, indent=2))
+    else:
+        print(f"No 10-K cash flow statement data found for {symbol}")
+
+    # --- Income Statement 10-Q Only ---
+    print(f"\n--- Getting Income Statement for {symbol} (10-Q, limit 1) ---")
+    income_statement_10q = helper.get_income_statement(symbol, limit=1, report_type="10-Q")
+    if income_statement_10q:
+        print(f"Found {len(income_statement_10q)} 10-Q reports.")
+        print(json.dumps(income_statement_10q, indent=2))
+    else:
+        print(f"No 10-Q income statement data found for {symbol}")
+
+    # --- Balance Sheet 10-Q Only ---
+    print(f"\n--- Getting Balance Sheet for {symbol} (10-Q, limit 1) ---")
+    balance_sheet_10q = helper.get_balance_sheet(symbol, limit=1, report_type="10-Q")
     if balance_sheet_10q:
         print(f"Found {len(balance_sheet_10q)} 10-Q reports.")
         print(json.dumps(balance_sheet_10q, indent=2))
     else:
         print(f"No 10-Q balance sheet data found for {symbol}")
 
-    # --- Cash Flow Statement Examples ---
-    print(f"\n--- Getting Cash Flow Statement for {symbol} (ALL, limit 2) ---")
-    cash_flow_all = helper.get_cash_flow_statement(symbol, limit=2, report_type="ALL")
-    if cash_flow_all:
-        print(f"Found {len(cash_flow_all)} reports.")
-        print(json.dumps(cash_flow_all, indent=2))
+    # --- Cash Flow Statement 10-Q Only ---
+    print(f"\n--- Getting Cash Flow Statement for {symbol} (10-Q, limit 1) ---")
+    cash_flow_10q = helper.get_cash_flow_statement(symbol, limit=1, report_type="10-Q")
+    if cash_flow_10q:
+        print(f"Found {len(cash_flow_10q)} 10-Q reports.")
+        print(json.dumps(cash_flow_10q, indent=2))
     else:
-        print(f"No cash flow statement data found for {symbol}")
+        print(f"No 10-Q cash flow statement data found for {symbol}")
 
     # --- Advanced Usage: Fetching specific XBRL concepts ---
     print(f"\n--- Getting specific concept: 'Revenues' for {symbol} ---")
