@@ -3,6 +3,8 @@
 import requests
 import time
 from functools import lru_cache
+from collections import defaultdict
+import copy
 
 # Base URLs for SEC EDGAR APIs
 SEC_BASE_URL = "https://www.sec.gov"
@@ -51,12 +53,15 @@ def _fetch_and_cache_cik_map(headers_tuple):
 
         # The JSON structure is a list of dictionaries like {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
         # Create a dictionary mapping ticker to CIK (padded to 10 digits)
-        cik_map = {item['ticker'].upper(): str(item['cik_str']).zfill(10)
-                   for item in data.values()}
+        cik_map = {
+            item["ticker"].upper(): str(item["cik_str"]).zfill(10)
+            for item in data.values()
+        }
         return cik_map
     except requests.exceptions.RequestException as e:
         print(
-            f"Error fetching CIK map with User-Agent '{headers.get('User-Agent')}': {e}")
+            f"Error fetching CIK map with User-Agent '{headers.get('User-Agent')}': {e}"
+        )
         return {}
 
 
@@ -108,12 +113,7 @@ def _get_company_facts_request(symbol_or_cik, headers, get_cik_func):
         return None
 
 
-def _get_company_concept_request(
-        symbol_or_cik,
-        taxonomy,
-        tag,
-        headers,
-        get_cik_func):
+def _get_company_concept_request(symbol_or_cik, taxonomy, tag, headers, get_cik_func):
     """
     Fetches specific XBRL concept data for a given company.
     Examples of taxonomy: "us-gaap", "ifrs-full", "dei", "srt"
@@ -150,13 +150,8 @@ def _get_company_concept_request(
 
 
 def _get_frames_data_request(
-        taxonomy,
-        tag,
-        unit,
-        year,
-        headers,
-        quarter=None,
-        instantaneous=False):
+    taxonomy, tag, unit, year, headers, quarter=None, instantaneous=False
+):
     """
     Fetches aggregated XBRL data across reporting entities for a specific concept
     and calendrical period. This API aggregates one fact for each reporting entity
@@ -195,13 +190,14 @@ def _get_frames_data_request(
 
 
 def _get_financial_statement_data(
-        symbol_or_cik,
-        statement_type,
-        limit,
-        report_type,
-        headers,
-        get_cik_func,
-        get_company_facts_func):
+    symbol_or_cik,
+    statement_type,
+    limit,
+    report_type,
+    headers,
+    get_cik_func,
+    get_company_facts_func,
+):
     """
     Fetches and formats basic financial statement data for a given symbol.
     This function aims to provide a simplified, JSON structure for
@@ -224,17 +220,20 @@ def _get_financial_statement_data(
               statement type is invalid.
     """
     # Resolve CIK using the provided function
-    cik = symbol_or_cik if (isinstance(symbol_or_cik, str) and symbol_or_cik.isdigit(
-    ) and len(symbol_or_cik) == 10) else get_cik_func(symbol_or_cik)
+    cik = (
+        symbol_or_cik
+        if (
+            isinstance(symbol_or_cik, str)
+            and symbol_or_cik.isdigit()
+            and len(symbol_or_cik) == 10
+        )
+        else get_cik_func(symbol_or_cik)
+    )
     if not cik:
         print(f"Error: Could not find CIK for: {symbol_or_cik}")
         return []
 
-    def _get_financial_value(
-            data_dict,
-            primary_tag,
-            alternate_tags=None,
-            default=0):
+    def _get_financial_value(data_dict, primary_tag, alternate_tags=None, default=0):
         """
         Retrieves a financial value from a dictionary of financial data.
 
@@ -310,7 +309,7 @@ def _get_financial_statement_data(
             "EarningsPerShareDiluted",
             "WeightedAverageNumberOfSharesOutstandingBasic",
             "WeightedAverageNumberOfDilutedSharesOutstanding",
-            "DepreciationDepletionAndAmortization"
+            "DepreciationDepletionAndAmortization",
         ],
         "balance_sheet": [
             "CashAndCashEquivalentsAtCarryingValue",
@@ -389,7 +388,7 @@ def _get_financial_statement_data(
             "NoncontrollingInterest",  # Alt for minorityInterest
             "StockholdersEquity",  # For totalStockholdersEquity
             # Alt for totalStockholdersEquity
-            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
         ],
         "cash_flow": [
             # Operating Activities - Reconciliation & Direct
@@ -404,7 +403,6 @@ def _get_financial_statement_data(
             "IncreaseDecreaseInOtherOperatingAssetsLiabilitiesNet",  # For 'otherWorkingCapital'
             "OtherNoncashIncomeExpense",  # For 'otherNonCashItems'
             "NetCashProvidedByUsedInOperatingActivities",
-
             # Investing Activities
             "PaymentsToAcquirePropertyPlantAndEquipment",
             # For 'investmentsInPropertyPlantAndEquipment' &
@@ -415,7 +413,6 @@ def _get_financial_statement_data(
             "ProceedsFromSaleAndMaturityOfMarketableSecurities",
             "OtherInvestingActivitiesCashFlows",  # For 'otherInvestingActivities'
             "NetCashProvidedByUsedInInvestingActivities",
-
             # Financing Activities
             "ProceedsFromIssuanceOfLongTermDebt",
             "RepaymentsOfLongTermDebt",
@@ -429,7 +426,6 @@ def _get_financial_statement_data(
             "PaymentsOfDividendsPreferredStock",  # For 'preferredDividendsPaid'
             "OtherFinancingActivitiesCashFlows",  # For 'otherFinancingActivities'
             "NetCashProvidedByUsedInFinancingActivities",
-
             # Summary & Other
             "CashAndCashEquivalentsPeriodIncreaseDecrease",
             "EffectOfExchangeRateOnCashAndCashEquivalents",
@@ -440,12 +436,13 @@ def _get_financial_statement_data(
             "CashAndCashEquivalentsAtBeginningOfPeriod",  # Alternative for beginning cash
             "IncomeTaxesPaidNet",
             "InterestPaidNet",
-        ]
+        ],
     }
 
     if statement_type not in statement_tags:
         print(
-            f"Error: Invalid financial statement type: {statement_type}. Choose from: {', '.join(statement_tags.keys())}")
+            f"Error: Invalid financial statement type: {statement_type}. Choose from: {', '.join(statement_tags.keys())}"
+        )
         return []
 
     required_tags = statement_tags[statement_type]
@@ -456,37 +453,43 @@ def _get_financial_statement_data(
     # report_instances_data is already initialized before this loop.
     report_instances_data = {}
 
-    facts_section = company_facts.get('facts', {})
-    us_gaap_facts = facts_section.get('us-gaap', {})
+    facts_section = company_facts.get("facts", {})
+    us_gaap_facts = facts_section.get("us-gaap", {})
 
     for tag in required_tags:
         concept_data = us_gaap_facts.get(tag, {})
-        for unit_type, facts_list in concept_data.get('units', {}).items():
+        for unit_type, facts_list in concept_data.get("units", {}).items():
             # We are interested in monetary units, typically USD.
             # However, some concepts might be in other units (e.g., shares for EPS).
             # For simplicity, we'll process all units and let the structure of company_facts guide us.
             # If specific unit filtering is needed, it can be added here (e.g.,
             # if unit_type != "USD": continue)
             for fact in facts_list:
-                fiscal_year = fact.get('fy')
-                fiscal_period = fact.get('fp')
-                form_type = fact.get('form')
-                filed_at = fact.get('filed')
-                value = fact.get('val')
-                end_date = fact.get('end')
+                fiscal_year = fact.get("fy")
+                fiscal_period = fact.get("fp")
+                form_type = fact.get("form")
+                filed_at = fact.get("filed")
+                value = fact.get("val")
+                end_date = fact.get("end")
                 # This start_date is per-fact, might not be the period
                 # start_date
-                start_date = fact.get('start')
+                start_date = fact.get("start")
 
                 if not (
-                        form_type and filed_at and end_date and fiscal_year is not None and fiscal_period and value is not None):
+                    form_type
+                    and filed_at
+                    and end_date
+                    and fiscal_year is not None
+                    and fiscal_period
+                    and value is not None
+                ):
                     continue
 
                 form_group = None
-                if form_type.upper().startswith('10-K'):
-                    form_group = '10-K'
-                elif form_type.upper().startswith('10-Q'):
-                    form_group = '10-Q'
+                if form_type.upper().startswith("10-K"):
+                    form_group = "10-K"
+                elif form_type.upper().startswith("10-Q"):
+                    form_group = "10-Q"
                 else:
                     continue  # Only process 10-K and 10-Q related forms
 
@@ -495,7 +498,12 @@ def _get_financial_statement_data(
                 if report_instance_key not in report_instances_data:
                     report_instances_data[report_instance_key] = {
                         # Store original symbol if provided
-                        "symbol": symbol_or_cik.upper() if isinstance(symbol_or_cik, str) and not symbol_or_cik.isdigit() else "N/A_CIK_USED",
+                        "symbol": (
+                            symbol_or_cik.upper()
+                            if isinstance(symbol_or_cik, str)
+                            and not symbol_or_cik.isdigit()
+                            else "N/A_CIK_USED"
+                        ),
                         "fiscalYear": fiscal_year,
                         "fiscalPeriod": fiscal_period,
                         "formType": form_type,
@@ -505,13 +513,13 @@ def _get_financial_statement_data(
                         # Use the start_date from the first fact encountered for this report instance.
                         # This might need refinement if a true period start_date is required across all facts.
                         "startDate": start_date,
-                        "data": {}
+                        "data": {},
                     }
 
                 # Add the fact to the data dictionary - no need for additional filtering
                 # since we're already grouping by report_instance_key which ensures
                 # all facts belong to the same report instance
-                report_instances_data[report_instance_key]['data'][tag] = value
+                report_instances_data[report_instance_key]["data"][tag] = value
 
     # Step 2: Determine the canonical (latest filed) report for each (form_group, end_date)
     # If the latest report has insufficient data, fall back to the second most
@@ -522,14 +530,14 @@ def _get_financial_statement_data(
     # first)
     reports_by_period = {}
     for report_obj in report_instances_data.values():
-        key = (report_obj['formGroup'], report_obj['endDate'])
+        key = (report_obj["formGroup"], report_obj["endDate"])
         if key not in reports_by_period:
             reports_by_period[key] = []
         reports_by_period[key].append(report_obj)
 
     # Sort each group by filedAt (most recent first)
     for key in reports_by_period:
-        reports_by_period[key].sort(key=lambda r: r['filedAt'], reverse=True)
+        reports_by_period[key].sort(key=lambda r: r["filedAt"], reverse=True)
 
     # Define key balance sheet items to check for data completeness
     key_balance_sheet_items = [
@@ -537,8 +545,33 @@ def _get_financial_statement_data(
         "AssetsCurrent",
         "Assets",
         "LiabilitiesCurrent",
-        "StockholdersEquity"
+        "StockholdersEquity",
     ]
+
+    # Define key income statement items to check for data completeness
+    key_income_statement_items = [
+        "Revenues",
+        "OperatingIncomeLoss",
+        "NetIncomeLoss",
+        "CostOfRevenue",
+        "GrossProfit",
+    ]
+
+    # Define key cash flow items to check for data completeness
+    key_cash_flow_items = [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetIncomeLoss",
+        "DepreciationDepletionAndAmortization",
+    ]
+
+    # Select appropriate key items based on statement type
+    key_items_to_check = []
+    if statement_type == "balance_sheet":
+        key_items_to_check = key_balance_sheet_items
+    elif statement_type == "income_statement":
+        key_items_to_check = key_income_statement_items
+    elif statement_type == "cash_flow":
+        key_items_to_check = key_cash_flow_items
 
     for key, reports in reports_by_period.items():
         if not reports:
@@ -548,10 +581,10 @@ def _get_financial_statement_data(
         selected_report = reports[0]
 
         # Check if the most recent report has sufficient data
-        data = selected_report.get('data', {})
+        data = selected_report.get("data", {})
         num_nonzero_items = sum(
-            1 for item in key_balance_sheet_items if data.get(
-                item, 0) != 0)
+            1 for item in key_items_to_check if data.get(item, 0) != 0
+        )
         has_sufficient_data = num_nonzero_items >= 2
 
         # If the most recent report has insufficient data, try subsequent
@@ -559,10 +592,10 @@ def _get_financial_statement_data(
         if not has_sufficient_data and len(reports) > 1:
             for i in range(1, len(reports)):
                 candidate_report = reports[i]
-                candidate_data = candidate_report.get('data', {})
+                candidate_data = candidate_report.get("data", {})
                 candidate_num_nonzero_items = sum(
-                    1 for item in key_balance_sheet_items if candidate_data.get(
-                        item, 0) != 0)
+                    1 for item in key_items_to_check if candidate_data.get(item, 0) != 0
+                )
                 candidate_has_sufficient_data = candidate_num_nonzero_items >= 2
 
                 # If this report has sufficient data, use it
@@ -575,20 +608,16 @@ def _get_financial_statement_data(
     all_canonical_reports_list = list(canonical_reports.values())
 
     # Step 3: Separate into 10-K and 10-Q lists
-    ten_k_reports = [
-        r for r in all_canonical_reports_list if r['formGroup'] == '10-K']
-    ten_q_reports = [
-        r for r in all_canonical_reports_list if r['formGroup'] == '10-Q']
+    ten_k_reports = [r for r in all_canonical_reports_list if r["formGroup"] == "10-K"]
+    ten_q_reports = [r for r in all_canonical_reports_list if r["formGroup"] == "10-Q"]
 
     # Step 4: Sort each list by endDate (primary) and filedAt (secondary, for
     # tie-breaking), most recent first
-    def sort_key_func(r): return (
-        r.get(
-            'endDate',
-            '0000-00-00'),
-        r.get(
-            'filedAt',
-            '0000-00-00T00:00:00Z'))
+    def sort_key_func(r):
+        return (
+            r.get("endDate", "0000-00-00"),
+            r.get("filedAt", "0000-00-00T00:00:00Z"),
+        )
 
     ten_k_reports.sort(key=sort_key_func, reverse=True)
     ten_q_reports.sort(key=sort_key_func, reverse=True)
@@ -608,33 +637,57 @@ def _get_financial_statement_data(
         combined_reports.sort(key=sort_key_func, reverse=True)
         selected_reports = combined_reports[:limit]
     else:
-        print(
-            f"Warning: Invalid report_type '{report_type}'. Defaulting to 'ALL'.")
+        print(f"Warning: Invalid report_type '{report_type}'. Defaulting to 'ALL'.")
         combined_reports = ten_k_reports + ten_q_reports
         combined_reports.sort(key=sort_key_func, reverse=True)
         selected_reports = combined_reports[:limit]
 
-    # Step 6 (was Step 7): Format results
+    # Step 6: Deduplicate by calendar year, patching zero values with earlier reports
+    reports_by_year = defaultdict(list)
+    for report in selected_reports:
+        year = report["endDate"][:4]
+        key = (year, report["formGroup"])
+        reports_by_year[key].append(report)
+
+    patched_reports = []
+    for (year, form_group), reports in reports_by_year.items():
+        # Sort reports by endDate descending, then filedAt descending
+        reports.sort(key=lambda r: (r["endDate"], r["filedAt"]), reverse=True)
+        # Start with the latest report
+        patched = copy.deepcopy(reports[0])
+        # For each numeric field, patch zero values with non-zero values from earlier reports
+        for field, value in patched["data"].items():
+            if isinstance(value, (int, float)) and value == 0:
+                for prev_report in reports[1:]:
+                    prev_value = prev_report["data"].get(field)
+                    if isinstance(prev_value, (int, float)) and prev_value != 0:
+                        patched["data"][field] = prev_value
+                        break
+        patched_reports.append(patched)
+
+    deduplicated_reports = patched_reports
+
+    # Step 7: Format results
     formatted_results = []
 
-    for period_details in selected_reports:
+    for period_details in deduplicated_reports:
         data = period_details.get("data", {})
 
         # Determine period string (FY, Q1, Q2, etc.)
         period_val = period_details["fiscalPeriod"]
-        if period_details["formGroup"] == '10-K':
-            period_val = 'FY'
+        if period_details["formGroup"] == "10-K":
+            period_val = "FY"
 
         # Revenue: Try a list of common tags in order of preference.
         # Ensure these tags are included in statement_tags["income_statement"]
         # above.
         revenue = 0  # Default value
         revenue_possible_tags = [
-            'Revenues',
-            'RevenueFromContractWithCustomerExcludingAssessedTax',
-            'SalesRevenueNet',
-            'SalesRevenueGoodsNet',
-            'SalesRevenueServicesNet'
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
         ]
         for r_tag in revenue_possible_tags:
             if r_tag in data:  # Check if the tag was found and data collected for it
@@ -647,8 +700,7 @@ def _get_financial_statement_data(
         # found, revenue remains 0.
 
         costOfRevenue = 0
-        costOfRevenue_possible_tags = [
-            'CostOfRevenue', 'CostOfGoodsAndServicesSold']
+        costOfRevenue_possible_tags = ["CostOfRevenue", "CostOfGoodsAndServicesSold"]
         for tag in costOfRevenue_possible_tags:
             if tag in data:
                 costOfRevenue = _get_financial_value(data, tag)
@@ -658,23 +710,28 @@ def _get_financial_statement_data(
         # GrossProfit can be explicitly found or calculated.
         # If GrossProfit tag exists and is non-zero, use it. Otherwise,
         # calculate.
-        grossProfit_explicit = _get_financial_value(data, 'GrossProfit')
-        grossProfit = grossProfit_explicit if grossProfit_explicit != 0 else (
-            revenue - costOfRevenue)
+        grossProfit_explicit = _get_financial_value(data, "GrossProfit")
+        grossProfit = (
+            grossProfit_explicit
+            if grossProfit_explicit != 0
+            else (revenue - costOfRevenue)
+        )
         # If GrossProfit was explicitly 0, but revenue and CoR allow calculation, it will be calculated.
         # If GrossProfit tag was not found, it will be calculated.
 
         generalAndAdministrativeExpenses = 0
         sellingAndMarketingExpenses = 0
         researchAndDevelopmentExpense = _get_financial_value(
-            data, "ResearchAndDevelopmentExpense")
+            data, "ResearchAndDevelopmentExpense"
+        )
         sga_combined = _get_financial_value(
-            data, "SellingGeneralAndAdministrativeExpense")
-        ga_separate = _get_financial_value(
-            data, "GeneralAndAdministrativeExpense")
+            data, "SellingGeneralAndAdministrativeExpense"
+        )
+        ga_separate = _get_financial_value(data, "GeneralAndAdministrativeExpense")
         sm_separate = _get_financial_value(data, "SellingAndMarketingExpense")
         otherOperatingExpenses_val = _get_financial_value(
-            data, "OtherOperatingExpenses")
+            data, "OtherOperatingExpenses"
+        )
 
         if ga_separate != 0 or sm_separate != 0:  # Prefer separate tags if available
             generalAndAdministrativeExpenses = ga_separate
@@ -687,13 +744,20 @@ def _get_financial_statement_data(
         # Calculate total operating expenses
         # Use the specific 'OperatingExpenses' tag if available and non-zero,
         # otherwise sum components.
-        operatingExpenses_from_tag = _get_financial_value(
-            data, 'OperatingExpenses')
-        calculated_operating_components_sum = researchAndDevelopmentExpense + \
-            generalAndAdministrativeExpenses + sellingAndMarketingExpenses + otherExpenses_val
+        operatingExpenses_from_tag = _get_financial_value(data, "OperatingExpenses")
+        calculated_operating_components_sum = (
+            researchAndDevelopmentExpense
+            + generalAndAdministrativeExpenses
+            + sellingAndMarketingExpenses
+            + otherExpenses_val
+        )
 
         # Use explicit if non-zero
-        operatingExpenses = operatingExpenses_from_tag if operatingExpenses_from_tag != 0 else calculated_operating_components_sum
+        operatingExpenses = (
+            operatingExpenses_from_tag
+            if operatingExpenses_from_tag != 0
+            else calculated_operating_components_sum
+        )
 
         # Derived (Cost of Revenue + All Operating Expenses)
         costAndExpenses = costOfRevenue + operatingExpenses
@@ -701,12 +765,17 @@ def _get_financial_statement_data(
         # Interest Income / Expense
         # Prioritize discrete InterestIncome and InterestExpense. Fallback to
         # InterestIncomeExpenseNet.
-        interestIncome_val = _get_financial_value(data, 'InterestIncome')
-        interestExpense_val = _get_financial_value(data, 'InterestExpense')
+        interestIncome_val = _get_financial_value(data, "InterestIncome")
+        interestExpense_val = _get_financial_value(data, "InterestExpense")
         interestIncomeExpenseNet_val = _get_financial_value(
-            data, 'InterestIncomeExpenseNet')
+            data, "InterestIncomeExpenseNet"
+        )
 
-        if interestIncome_val == 0 and interestExpense_val == 0 and interestIncomeExpenseNet_val != 0:
+        if (
+            interestIncome_val == 0
+            and interestExpense_val == 0
+            and interestIncomeExpenseNet_val != 0
+        ):
             if interestIncomeExpenseNet_val > 0:
                 interestIncome_val = interestIncomeExpenseNet_val
             else:  # interestIncomeExpenseNet_val < 0
@@ -717,27 +786,42 @@ def _get_financial_statement_data(
         netInterestIncome = interestIncome_val - interestExpense_val  # Derived
 
         depreciationAndAmortization = _get_financial_value(
-            data, 'DepreciationDepletionAndAmortization')
+            data, "DepreciationDepletionAndAmortization"
+        )
 
-        operatingIncome = _get_financial_value(data, 'OperatingIncomeLoss')
+        operatingIncome = _get_financial_value(data, "OperatingIncomeLoss")
         # If operatingIncome is zero from tag, try to derive it
-        if operatingIncome == 0 and grossProfit != 0 and (
-                researchAndDevelopmentExpense != 0 or generalAndAdministrativeExpenses != 0 or sellingAndMarketingExpenses != 0 or otherExpenses_val != 0):
-            operatingIncome = grossProfit - (researchAndDevelopmentExpense + generalAndAdministrativeExpenses + \
-                                             sellingAndMarketingExpenses + otherExpenses_val + depreciationAndAmortization) # More complete OpEx for derivation
+        if (
+            operatingIncome == 0
+            and grossProfit != 0
+            and (
+                researchAndDevelopmentExpense != 0
+                or generalAndAdministrativeExpenses != 0
+                or sellingAndMarketingExpenses != 0
+                or otherExpenses_val != 0
+            )
+        ):
+            operatingIncome = grossProfit - (
+                researchAndDevelopmentExpense
+                + generalAndAdministrativeExpenses
+                + sellingAndMarketingExpenses
+                + otherExpenses_val
+                + depreciationAndAmortization
+            )  # More complete OpEx for derivation
 
         ebitda = operatingIncome + depreciationAndAmortization  # Derived
         ebit = operatingIncome  # ebit is Operating Income
 
         totalOtherIncomeExpensesNet = _get_financial_value(
-            data, 'NonoperatingIncomeLoss')
+            data, "NonoperatingIncomeLoss"
+        )
 
         incomeBeforeTax = 0
         incomeBeforeTax_possible_tags = [
-            'IncomeLossFromContinuingOperationsBeforeIncomeTax',
-            'IncomeBeforeIncomeTax',
-            'IncomeBeforeTax',
-            'ProfitLossBeforeTax'
+            "IncomeLossFromContinuingOperationsBeforeIncomeTax",
+            "IncomeBeforeIncomeTax",
+            "IncomeBeforeTax",
+            "ProfitLossBeforeTax",
         ]
         for tag in incomeBeforeTax_possible_tags:
             if tag in data:
@@ -746,30 +830,38 @@ def _get_financial_statement_data(
                     break
         # Fallback calculation for Income Before Tax (EBT)
         if incomeBeforeTax == 0 and operatingIncome != 0:
-            incomeBeforeTax = operatingIncome + netInterestIncome + \
-                totalOtherIncomeExpensesNet  # Common derivation
+            incomeBeforeTax = (
+                operatingIncome + netInterestIncome + totalOtherIncomeExpensesNet
+            )  # Common derivation
 
-        incomeTaxExpense = _get_financial_value(
-            data, 'IncomeTaxExpenseBenefit')
+        incomeTaxExpense = _get_financial_value(data, "IncomeTaxExpenseBenefit")
 
-        netIncome = _get_financial_value(data, 'NetIncomeLoss')
+        netIncome = _get_financial_value(data, "NetIncomeLoss")
         netIncomeFromDiscontinuedOperations = _get_financial_value(
-            data, 'NetIncomeLossFromDiscontinuedOperationsNetOfTax')
-        netIncomeFromContinuingOperations = netIncome - \
-            netIncomeFromDiscontinuedOperations  # Derived
+            data, "NetIncomeLossFromDiscontinuedOperationsNetOfTax"
+        )
+        netIncomeFromContinuingOperations = (
+            netIncome - netIncomeFromDiscontinuedOperations
+        )  # Derived
 
-        eps = _get_financial_value(data, 'EarningsPerShareBasic')
-        epsDiluted = _get_financial_value(data, 'EarningsPerShareDiluted')
+        eps = _get_financial_value(data, "EarningsPerShareBasic")
+        epsDiluted = _get_financial_value(data, "EarningsPerShareDiluted")
         weightedAverageShsOut = _get_financial_value(
-            data, 'WeightedAverageNumberOfSharesOutstandingBasic')
+            data, "WeightedAverageNumberOfSharesOutstandingBasic"
+        )
         weightedAverageShsOutDil = _get_financial_value(
-            data, 'WeightedAverageNumberOfDilutedSharesOutstanding')
+            data, "WeightedAverageNumberOfDilutedSharesOutstanding"
+        )
 
         # Base item structure common to all statement types
         base_item = {
             "date": period_details["endDate"],
             # Store original symbol if provided
-            "symbol": symbol_or_cik.upper() if isinstance(symbol_or_cik, str) and not symbol_or_cik.isdigit() else "N/A_CIK_USED",
+            "symbol": (
+                symbol_or_cik.upper()
+                if isinstance(symbol_or_cik, str) and not symbol_or_cik.isdigit()
+                else "N/A_CIK_USED"
+            ),
             "reportedCurrency": "USD",  # Assuming USD
             "cik": cik,
             "filingDate": period_details["filedAt"][:10],
@@ -822,14 +914,18 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "CashAndCashEquivalents",
                     "Cash",
-                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"])
+                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                ],
+            )
             shortTermInvestments = _get_financial_value(
                 data,
                 "MarketableSecuritiesCurrent",
                 alternate_tags=[
                     "ShortTermInvestments",
                     "AvailableForSaleSecuritiesCurrent",
-                    "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost"])
+                    "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost",
+                ],
+            )
             cashAndShortTermInvestments = cashAndCashEquivalents + shortTermInvestments
 
             netReceivables = _get_financial_value(
@@ -837,23 +933,21 @@ def _get_financial_statement_data(
                 "AccountsReceivableNetCurrent",
                 alternate_tags=[
                     "ReceivablesNetCurrent",
-                    "AccountsReceivableGrossCurrent"
-                ]
+                    "AccountsReceivableGrossCurrent",
+                ],
             )
             accountsReceivables = _get_financial_value(
                 data,
                 "AccountsReceivableTradeCurrent",
-                alternate_tags=[
-                    "AccountsReceivableGrossCurrent"
-                ]
+                alternate_tags=["AccountsReceivableGrossCurrent"],
             )
             otherReceivables = _get_financial_value(
                 data,
                 "OtherReceivablesCurrent",
                 alternate_tags=[
                     "NotesAndLoansReceivableNetCurrent",
-                    "ContractReceivableRetainage"
-                ]
+                    "ContractReceivableRetainage",
+                ],
             )
             inventory = _get_financial_value(
                 data,
@@ -862,22 +956,18 @@ def _get_financial_statement_data(
                     "Inventory",
                     "InventoryFinishedGoods",
                     "InventoryRawMaterials",
-                    "InventoryWorkInProcess"
-                ]
+                    "InventoryWorkInProcess",
+                ],
             )
             prepaids = _get_financial_value(
                 data,
                 "PrepaidExpenseCurrent",
-                alternate_tags=[
-                    "PrepaidExpenseAndOtherAssetsCurrent"
-                ]
+                alternate_tags=["PrepaidExpenseAndOtherAssetsCurrent"],
             )
             otherCurrentAssets = _get_financial_value(
                 data,
                 "OtherAssetsCurrent",
-                alternate_tags=[
-                    "OtherAssetsMiscellaneousCurrent"
-                ]
+                alternate_tags=["OtherAssetsMiscellaneousCurrent"],
             )
 
             totalCurrentAssets = _get_financial_value(
@@ -885,40 +975,42 @@ def _get_financial_statement_data(
                 "AssetsCurrent",
                 alternate_tags=[
                     "AssetsHeldForSaleCurrent",
-                    "AssetsOfDisposalGroupIncludingDiscontinuedOperationCurrent"
-                ]
+                    "AssetsOfDisposalGroupIncludingDiscontinuedOperationCurrent",
+                ],
             )
             if totalCurrentAssets == 0:
                 # If the total isn't explicitly stated, sum the components
-                totalCurrentAssets = cashAndShortTermInvestments + \
-                    netReceivables + inventory + prepaids + otherCurrentAssets
+                totalCurrentAssets = (
+                    cashAndShortTermInvestments
+                    + netReceivables
+                    + inventory
+                    + prepaids
+                    + otherCurrentAssets
+                )
 
             # Non-Current Assets
             propertyPlantEquipmentNet = _get_financial_value(
                 data,
                 "PropertyPlantAndEquipmentNet",
-                alternate_tags=[
-                    "PropertyPlantAndEquipmentGross"
-                ]
+                alternate_tags=["PropertyPlantAndEquipmentGross"],
             )
             goodwill = _get_financial_value(
                 data,
                 "Goodwill",
-                alternate_tags=[
-                    "GoodwillImpairedAccumulatedImpairmentLoss"
-                ]
+                alternate_tags=["GoodwillImpairedAccumulatedImpairmentLoss"],
             )
             intangibleAssets = _get_financial_value(
                 data,
                 "IntangibleAssetsNetExcludingGoodwill",
                 alternate_tags=[
                     "IntangibleAssets",
-                    "IntangibleAssetsGrossExcludingGoodwill"
-                ]
+                    "IntangibleAssetsGrossExcludingGoodwill",
+                ],
             )
 
             goodwillAndIntangibleAssets = _get_financial_value(
-                data, "GoodwillAndIntangibleAssets")
+                data, "GoodwillAndIntangibleAssets"
+            )
             if goodwillAndIntangibleAssets == 0:
                 goodwillAndIntangibleAssets = goodwill + intangibleAssets
 
@@ -927,45 +1019,41 @@ def _get_financial_statement_data(
                 "MarketableSecuritiesNoncurrent",
                 alternate_tags=[
                     "LongTermInvestments",
-                    "AvailableForSaleSecuritiesRestrictedNoncurrent"
-                ]
+                    "AvailableForSaleSecuritiesRestrictedNoncurrent",
+                ],
             )
             taxAssets = _get_financial_value(
                 data,
                 "DeferredTaxAssetsNet",
                 alternate_tags=[
                     "DeferredTaxAssetsNetCurrent",
-                    "DeferredTaxAssetsNetNoncurrent"
-                ]
+                    "DeferredTaxAssetsNetNoncurrent",
+                ],
             )
             otherNonCurrentAssets = _get_financial_value(
                 data,
                 "OtherAssetsNoncurrent",
-                alternate_tags=[
-                    "OtherAssetsMiscellaneousNoncurrent"
-                ]
+                alternate_tags=["OtherAssetsMiscellaneousNoncurrent"],
             )
 
             totalNonCurrentAssets = _get_financial_value(
-                data,
-                "AssetsNoncurrent",
-                alternate_tags=[
-                    "NoncurrentAssets"
-                ]
+                data, "AssetsNoncurrent", alternate_tags=["NoncurrentAssets"]
             )
             if totalNonCurrentAssets == 0:
                 # If the total isn't explicitly stated, sum the components
-                totalNonCurrentAssets = propertyPlantEquipmentNet + goodwillAndIntangibleAssets + \
-                    longTermInvestments + taxAssets + otherNonCurrentAssets
+                totalNonCurrentAssets = (
+                    propertyPlantEquipmentNet
+                    + goodwillAndIntangibleAssets
+                    + longTermInvestments
+                    + taxAssets
+                    + otherNonCurrentAssets
+                )
 
             # Total Assets
             totalAssets = _get_financial_value(
                 data,
                 "Assets",
-                alternate_tags=[
-                    "TotalAssets",
-                    "LiabilitiesAndStockholdersEquity"
-                ]
+                alternate_tags=["TotalAssets", "LiabilitiesAndStockholdersEquity"],
             )
             if totalAssets == 0:
                 totalAssets = totalCurrentAssets + totalNonCurrentAssets
@@ -975,48 +1063,35 @@ def _get_financial_statement_data(
             accountPayables = _get_financial_value(
                 data,
                 "AccountsPayableCurrent",
-                alternate_tags=[
-                    "IncreaseDecreaseInAccountsPayable"
-                ]
+                alternate_tags=["IncreaseDecreaseInAccountsPayable"],
             )
-            otherPayables = _get_financial_value(
-                data,
-                "OtherAccountsPayableCurrent"
-            )
+            otherPayables = _get_financial_value(data, "OtherAccountsPayableCurrent")
             totalPayables = accountPayables + otherPayables
             accruedExpenses = _get_financial_value(
                 data,
                 "AccruedLiabilitiesCurrent",
                 alternate_tags=[
                     "AccruedIncomeTaxesCurrent",
-                    "AccruedIncomeTaxesNoncurrent"
-                ]
+                    "AccruedIncomeTaxesNoncurrent",
+                ],
             )
 
             shortTermDebt = _get_financial_value(
                 data,
                 "DebtCurrent",
-                alternate_tags=[
-                    "LongTermDebtAndCapitalLeaseObligationsCurrent"
-                ]
+                alternate_tags=["LongTermDebtAndCapitalLeaseObligationsCurrent"],
             )
             if shortTermDebt == 0:
                 component_sum = (
-                    _get_financial_value(
-                        data,
-                        "CommercialPaper") +
-                    _get_financial_value(
-                        data,
-                        "LongTermDebtCurrentMaturities") +
-                    _get_financial_value(
-                        data,
-                        "NotesPayableCurrent") +
-                    _get_financial_value(
-                        data,
-                        "ShortTermBorrowings"))
+                    _get_financial_value(data, "CommercialPaper")
+                    + _get_financial_value(data, "LongTermDebtCurrentMaturities")
+                    + _get_financial_value(data, "NotesPayableCurrent")
+                    + _get_financial_value(data, "ShortTermBorrowings")
+                )
                 if component_sum == 0:
                     alt_std = _get_financial_value(
-                        data, "LongTermDebtCurrentMaturitiesAndOtherShortTermDebt")
+                        data, "LongTermDebtCurrentMaturitiesAndOtherShortTermDebt"
+                    )
                     if alt_std != 0:
                         component_sum = alt_std
                 shortTermDebt = component_sum
@@ -1024,17 +1099,16 @@ def _get_financial_statement_data(
             capitalLeaseObligationsCurrent = _get_financial_value(
                 data,
                 "OperatingLeaseLiabilityCurrent",
-                alternate_tags=["CapitalLeaseObligationsCurrent"]
+                alternate_tags=["CapitalLeaseObligationsCurrent"],
             )
             taxPayables = _get_financial_value(data, "IncomeTaxesPayable")
             deferredRevenue = _get_financial_value(
                 data,
                 "DeferredRevenueCurrent",
-                alternate_tags=["ContractWithCustomerLiabilityCurrent"]
+                alternate_tags=["ContractWithCustomerLiabilityCurrent"],
             )
             otherCurrentLiabilities = _get_financial_value(
-                data,
-                "OtherLiabilitiesCurrent"
+                data, "OtherLiabilitiesCurrent"
             )
 
             totalCurrentLiabilities = _get_financial_value(
@@ -1042,59 +1116,63 @@ def _get_financial_statement_data(
                 "LiabilitiesCurrent",
                 alternate_tags=[
                     "LiabilitiesOfDisposalGroupIncludingDiscontinuedOperationCurrent"
-                ]
+                ],
             )
             if totalCurrentLiabilities == 0:
                 totalCurrentLiabilities = (
-                    accountPayables +
-                    otherPayables +
-                    accruedExpenses +
-                    shortTermDebt +
-                    capitalLeaseObligationsCurrent +
-                    taxPayables +
-                    deferredRevenue +
-                    otherCurrentLiabilities)
+                    accountPayables
+                    + otherPayables
+                    + accruedExpenses
+                    + shortTermDebt
+                    + capitalLeaseObligationsCurrent
+                    + taxPayables
+                    + deferredRevenue
+                    + otherCurrentLiabilities
+                )
 
             # Non-Current Liabilities
             longTermDebt_val = _get_financial_value(
-                data,
-                "LongTermDebtNoncurrent",
-                alternate_tags=["LongTermDebt"]
+                data, "LongTermDebtNoncurrent", alternate_tags=["LongTermDebt"]
             )
             capitalLeaseObligationsNonCurrent = _get_financial_value(
                 data,
                 "OperatingLeaseLiabilityNoncurrent",
-                alternate_tags=["CapitalLeaseObligationsNoncurrent"]
+                alternate_tags=["CapitalLeaseObligationsNoncurrent"],
             )
             deferredRevenueNonCurrent = _get_financial_value(
                 data,
                 "DeferredRevenueNoncurrent",
-                alternate_tags=["ContractWithCustomerLiabilityNoncurrent"]
+                alternate_tags=["ContractWithCustomerLiabilityNoncurrent"],
             )
             deferredTaxLiabilitiesNonCurrent = _get_financial_value(
-                data, "DeferredTaxLiabilitiesNoncurrent")
+                data, "DeferredTaxLiabilitiesNoncurrent"
+            )
             otherNonCurrentLiabilities = _get_financial_value(
-                data, "OtherLiabilitiesNoncurrent")
+                data, "OtherLiabilitiesNoncurrent"
+            )
 
             totalNonCurrentLiabilities = _get_financial_value(
-                data,
-                "LiabilitiesNoncurrent"
+                data, "LiabilitiesNoncurrent"
             )
             if totalNonCurrentLiabilities == 0:
                 totalNonCurrentLiabilities = (
-                    longTermDebt_val +
-                    capitalLeaseObligationsNonCurrent +
-                    deferredRevenueNonCurrent +
-                    deferredTaxLiabilitiesNonCurrent +
-                    otherNonCurrentLiabilities)
+                    longTermDebt_val
+                    + capitalLeaseObligationsNonCurrent
+                    + deferredRevenueNonCurrent
+                    + deferredTaxLiabilitiesNonCurrent
+                    + otherNonCurrentLiabilities
+                )
 
-            capitalLeaseObligations = capitalLeaseObligationsCurrent + \
-                capitalLeaseObligationsNonCurrent
+            capitalLeaseObligations = (
+                capitalLeaseObligationsCurrent + capitalLeaseObligationsNonCurrent
+            )
 
             # Total Liabilities
             totalLiabilities = _get_financial_value(
-                data, "Liabilities", alternate_tags=[
-                    "TotalLiabilities", "LiabilitiesAndStockholdersEquity"])
+                data,
+                "Liabilities",
+                alternate_tags=["TotalLiabilities", "LiabilitiesAndStockholdersEquity"],
+            )
             if totalLiabilities == 0:
                 totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities
 
@@ -1103,7 +1181,7 @@ def _get_financial_statement_data(
             preferredStock = _get_financial_value(
                 data,
                 "PreferredStockValue",
-                alternate_tags=["RedeemablePreferredStockCarryingAmount"]
+                alternate_tags=["RedeemablePreferredStockCarryingAmount"],
             )
             commonStock = _get_financial_value(
                 data,
@@ -1112,34 +1190,34 @@ def _get_financial_statement_data(
                     "CommonStock",
                     "CommonStocksIncludingAdditionalPaidInCapital",
                     "CommonStockSharesOutstanding",
-                    "CommonStockSharesIssued"
-                ]
+                    "CommonStockSharesIssued",
+                ],
             )
             additionalPaidInCapital = _get_financial_value(
                 data,
                 "AdditionalPaidInCapital",
-                alternate_tags=["AdditionalPaidInCapitalCommonStock"]
+                alternate_tags=["AdditionalPaidInCapitalCommonStock"],
             )
-            if commonStock == _get_financial_value(
-                    data,
-                    "CommonStocksIncludingAdditionalPaidInCapital") and additionalPaidInCapital == 0:
+            if (
+                commonStock
+                == _get_financial_value(
+                    data, "CommonStocksIncludingAdditionalPaidInCapital"
+                )
+                and additionalPaidInCapital == 0
+            ):
                 commonStock -= additionalPaidInCapital
                 if commonStock < 0:
-                    commonStock = _get_financial_value(
-                        data, "CommonStockValue")
+                    commonStock = _get_financial_value(data, "CommonStockValue")
             retainedEarnings = _get_financial_value(
                 data,
                 "RetainedEarningsAccumulatedDeficit",
-                alternate_tags=["RetainedEarnings"]
+                alternate_tags=["RetainedEarnings"],
             )
             accumulatedOtherComprehensiveIncomeLoss = _get_financial_value(
-                data,
-                "AccumulatedOtherComprehensiveIncomeLossNetOfTax"
+                data, "AccumulatedOtherComprehensiveIncomeLossNetOfTax"
             )
             minorityInterest = _get_financial_value(
-                data,
-                "MinorityInterest",
-                alternate_tags=["NoncontrollingInterest"]
+                data, "MinorityInterest", alternate_tags=["NoncontrollingInterest"]
             )
 
             # Total Equity
@@ -1148,32 +1226,35 @@ def _get_financial_statement_data(
                 "StockholdersEquity",
                 alternate_tags=[
                     "TotalStockholdersEquity",
-                    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
-                ]
+                    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                ],
             )
 
-            if minorityInterest == 0 and _get_financial_value(
-                    data, "StockholdersEquity") != totalStockholdersEquity:
-                minorityInterest = totalStockholdersEquity - \
-                    _get_financial_value(data, "StockholdersEquity")
+            if (
+                minorityInterest == 0
+                and _get_financial_value(data, "StockholdersEquity")
+                != totalStockholdersEquity
+            ):
+                minorityInterest = totalStockholdersEquity - _get_financial_value(
+                    data, "StockholdersEquity"
+                )
 
             if totalStockholdersEquity == 0:
                 # This is a common calculation, but note that treasury stock is
                 # negative equity.
                 totalStockholdersEquity = (
-                    commonStock + additionalPaidInCapital + retainedEarnings +
-                    accumulatedOtherComprehensiveIncomeLoss - treasuryStock
+                    commonStock
+                    + additionalPaidInCapital
+                    + retainedEarnings
+                    + accumulatedOtherComprehensiveIncomeLoss
+                    - treasuryStock
                 )
 
             # DERIVED & SUMMARY METRICS
             totalLiabilitiesAndTotalEquity = totalLiabilities + totalStockholdersEquity
             totalInvestments = shortTermInvestments + longTermInvestments
 
-            totalDebt = _get_financial_value(
-                data,
-                "TotalDebt",
-                alternate_tags=["Debt"]
-            )
+            totalDebt = _get_financial_value(data, "TotalDebt", alternate_tags=["Debt"])
             if totalDebt == 0:
                 totalDebt = shortTermDebt + longTermDebt_val + capitalLeaseObligations
 
@@ -1239,114 +1320,167 @@ def _get_financial_statement_data(
         elif statement_type == "cash_flow":
             # Operating Activities
             netIncome_cf = _get_financial_value(
-                data, "NetIncomeLoss")  # Often starting point
+                data, "NetIncomeLoss"
+            )  # Often starting point
             depreciationAndAmortization_cf = _get_financial_value(
-                data, "DepreciationDepletionAndAmortization")
+                data, "DepreciationDepletionAndAmortization"
+            )
             deferredIncomeTax_cf = _get_financial_value(
                 data,
                 "DeferredIncomeTaxExpenseBenefit",
-                alternate_tags=["IncreaseDecreaseInDeferredIncomeTaxes"])
+                alternate_tags=["IncreaseDecreaseInDeferredIncomeTaxes"],
+            )
             stockBasedCompensation_cf = _get_financial_value(
-                data, "ShareBasedCompensation")
+                data, "ShareBasedCompensation"
+            )
 
             accountsReceivables_flow = _get_financial_value(
-                data, "IncreaseDecreaseInAccountsReceivableNetCurrent")
+                data, "IncreaseDecreaseInAccountsReceivableNetCurrent"
+            )
             inventory_flow = _get_financial_value(
-                data, "IncreaseDecreaseInInventoriesNet")
+                data, "IncreaseDecreaseInInventoriesNet"
+            )
             accountsPayables_flow = _get_financial_value(
-                data, "IncreaseDecreaseInAccountsPayableCurrent")
+                data, "IncreaseDecreaseInAccountsPayableCurrent"
+            )
             otherWorkingCapital_flow = _get_financial_value(
-                data, "IncreaseDecreaseInOtherOperatingAssetsLiabilitiesNet")
-            changeInWorkingCapital = accountsReceivables_flow + inventory_flow + \
-                accountsPayables_flow + otherWorkingCapital_flow  # Sum of individual flow components
+                data, "IncreaseDecreaseInOtherOperatingAssetsLiabilitiesNet"
+            )
+            changeInWorkingCapital = (
+                accountsReceivables_flow
+                + inventory_flow
+                + accountsPayables_flow
+                + otherWorkingCapital_flow
+            )  # Sum of individual flow components
 
             otherNonCashItems_cf = _get_financial_value(
-                data, "OtherNoncashIncomeExpense")
+                data, "OtherNoncashIncomeExpense"
+            )
             netCashProvidedByOperatingActivities = _get_financial_value(
-                data, "NetCashProvidedByUsedInOperatingActivities")
+                data, "NetCashProvidedByUsedInOperatingActivities"
+            )
 
             # Investing Activities
             investmentsInPropertyPlantAndEquipment = _get_financial_value(
-                data, "PaymentsToAcquirePropertyPlantAndEquipment")  # Typically negative
+                data, "PaymentsToAcquirePropertyPlantAndEquipment"
+            )  # Typically negative
             acquisitionsNet_cf = _get_financial_value(
-                data, "PaymentsToAcquireBusinessesNetOfCashAcquired")
+                data, "PaymentsToAcquireBusinessesNetOfCashAcquired"
+            )
             purchasesOfInvestments_cf = _get_financial_value(
-                data, "PaymentsForPurchasesOfInvestments")
+                data, "PaymentsForPurchasesOfInvestments"
+            )
             salesMaturitiesOfInvestments_cf = _get_financial_value(
-                data, "ProceedsFromSaleAndMaturityOfMarketableSecurities")
+                data, "ProceedsFromSaleAndMaturityOfMarketableSecurities"
+            )
             otherInvestingActivities_cf = _get_financial_value(
-                data, "OtherInvestingActivitiesCashFlows")
+                data, "OtherInvestingActivitiesCashFlows"
+            )
             netCashProvidedByInvestingActivities = _get_financial_value(
-                data, "NetCashProvidedByUsedInInvestingActivities")
+                data, "NetCashProvidedByUsedInInvestingActivities"
+            )
 
             # Financing Activities
             proceedsFromLongTermDebt = _get_financial_value(
-                data, "ProceedsFromIssuanceOfLongTermDebt")
+                data, "ProceedsFromIssuanceOfLongTermDebt"
+            )
             repaymentsOfLongTermDebt = _get_financial_value(
-                data, "RepaymentsOfLongTermDebt")  # Typically negative
-            longTermNetDebtIssuance = proceedsFromLongTermDebt + repaymentsOfLongTermDebt
+                data, "RepaymentsOfLongTermDebt"
+            )  # Typically negative
+            longTermNetDebtIssuance = (
+                proceedsFromLongTermDebt + repaymentsOfLongTermDebt
+            )
 
             proceedsFromShortTermDebt = _get_financial_value(
-                data, "ProceedsFromShortTermDebt")
+                data, "ProceedsFromShortTermDebt"
+            )
             repaymentsOfShortTermDebt = _get_financial_value(
-                data, "RepaymentsOfShortTermDebt")  # Typically negative
-            shortTermNetDebtIssuance = proceedsFromShortTermDebt + repaymentsOfShortTermDebt
+                data, "RepaymentsOfShortTermDebt"
+            )  # Typically negative
+            shortTermNetDebtIssuance = (
+                proceedsFromShortTermDebt + repaymentsOfShortTermDebt
+            )
 
             netDebtIssuance = longTermNetDebtIssuance + shortTermNetDebtIssuance
 
             proceedsFromCommonStock = _get_financial_value(
-                data, "ProceedsFromIssuanceOfCommonStock")
+                data, "ProceedsFromIssuanceOfCommonStock"
+            )
             paymentsForRepurchaseOfCommonStock = _get_financial_value(
-                data, "PaymentsForRepurchaseOfCommonStock")  # Typically negative
-            netCommonStockIssuance = proceedsFromCommonStock + \
-                paymentsForRepurchaseOfCommonStock
+                data, "PaymentsForRepurchaseOfCommonStock"
+            )  # Typically negative
+            netCommonStockIssuance = (
+                proceedsFromCommonStock + paymentsForRepurchaseOfCommonStock
+            )
             # Matches example's negative convention
             commonStockRepurchased_cf = paymentsForRepurchaseOfCommonStock
 
             proceedsFromPreferredStock = _get_financial_value(
-                data, "ProceedsFromIssuanceOfPreferredStock")
+                data, "ProceedsFromIssuanceOfPreferredStock"
+            )
             paymentsForRepurchaseOfPreferredStock = _get_financial_value(
-                data, "PaymentsForRepurchaseOfPreferredStock")  # Typically negative
-            netPreferredStockIssuance = proceedsFromPreferredStock + \
-                paymentsForRepurchaseOfPreferredStock
+                data, "PaymentsForRepurchaseOfPreferredStock"
+            )  # Typically negative
+            netPreferredStockIssuance = (
+                proceedsFromPreferredStock + paymentsForRepurchaseOfPreferredStock
+            )
 
             netStockIssuance = netCommonStockIssuance + netPreferredStockIssuance
 
             commonDividendsPaid_cf = _get_financial_value(
-                data, "PaymentsOfDividendsCommonStock")  # Typically negative
+                data, "PaymentsOfDividendsCommonStock"
+            )  # Typically negative
             preferredDividendsPaid_cf = _get_financial_value(
-                data, "PaymentsOfDividendsPreferredStock")  # Typically negative
+                data, "PaymentsOfDividendsPreferredStock"
+            )  # Typically negative
             netDividendsPaid_cf = commonDividendsPaid_cf + preferredDividendsPaid_cf
 
             otherFinancingActivities_cf = _get_financial_value(
-                data, "OtherFinancingActivitiesCashFlows")
+                data, "OtherFinancingActivitiesCashFlows"
+            )
             netCashProvidedByFinancingActivities = _get_financial_value(
-                data, "NetCashProvidedByUsedInFinancingActivities")
+                data, "NetCashProvidedByUsedInFinancingActivities"
+            )
 
             # Summary
             effectOfForexChangesOnCash_cf = _get_financial_value(
-                data, "EffectOfExchangeRateOnCashAndCashEquivalents")
+                data, "EffectOfExchangeRateOnCashAndCashEquivalents"
+            )
             netChangeInCash = _get_financial_value(
-                data, "CashAndCashEquivalentsPeriodIncreaseDecrease")
+                data, "CashAndCashEquivalentsPeriodIncreaseDecrease"
+            )
             cashAtEndOfPeriod_cf = _get_financial_value(
-                data, "CashAndCashEquivalentsAtCarryingValue")
+                data, "CashAndCashEquivalentsAtCarryingValue"
+            )
             cashAtBeginningOfPeriod_cf = _get_financial_value(
                 data,
                 "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsAtBeginningOfPeriod",
-                alternate_tags=["CashAndCashEquivalentsAtBeginningOfPeriod"])
-            if cashAtBeginningOfPeriod_cf == 0 and cashAtEndOfPeriod_cf != 0 and netChangeInCash != 0:  # Try to derive if not found
-                cashAtBeginningOfPeriod_cf = cashAtEndOfPeriod_cf - netChangeInCash - \
-                    effectOfForexChangesOnCash_cf  # Adjust for forex too
+                alternate_tags=["CashAndCashEquivalentsAtBeginningOfPeriod"],
+            )
+            if (
+                cashAtBeginningOfPeriod_cf == 0
+                and cashAtEndOfPeriod_cf != 0
+                and netChangeInCash != 0
+            ):  # Try to derive if not found
+                cashAtBeginningOfPeriod_cf = (
+                    cashAtEndOfPeriod_cf
+                    - netChangeInCash
+                    - effectOfForexChangesOnCash_cf
+                )  # Adjust for forex too
 
             # Derived & Other
             operatingCashFlow_cf = netCashProvidedByOperatingActivities  # Alias
-            capitalExpenditure_cf = investmentsInPropertyPlantAndEquipment * - \
-                1 if investmentsInPropertyPlantAndEquipment < 0 else investmentsInPropertyPlantAndEquipment  # Make positive
-            freeCashFlow_cf = netCashProvidedByOperatingActivities + \
-                investmentsInPropertyPlantAndEquipment  # Capex is negative
+            capitalExpenditure_cf = (
+                investmentsInPropertyPlantAndEquipment * -1
+                if investmentsInPropertyPlantAndEquipment < 0
+                else investmentsInPropertyPlantAndEquipment
+            )  # Make positive
+            freeCashFlow_cf = (
+                netCashProvidedByOperatingActivities
+                + investmentsInPropertyPlantAndEquipment
+            )  # Capex is negative
 
-            incomeTaxesPaid_cf = _get_financial_value(
-                data, "IncomeTaxesPaidNet")
+            incomeTaxesPaid_cf = _get_financial_value(data, "IncomeTaxesPaidNet")
             interestPaid_cf = _get_financial_value(data, "InterestPaidNet")
 
             item = {
@@ -1392,12 +1526,11 @@ def _get_financial_statement_data(
                 "interestPaid": interestPaid_cf,
             }
         else:
-            item = {
-                **base_item,
-                "error": "Unknown statement type for formatting"}
+            item = {**base_item, "error": "Unknown statement type for formatting"}
         formatted_results.append(item)
 
     return formatted_results
+
 
 # Main class to be exposed as the public interface of the package
 
@@ -1456,7 +1589,8 @@ class SECHelper:
                   or None if the data cannot be retrieved.
         """
         return _get_company_facts_request(
-            symbol_or_cik, self.headers, self.get_cik_for_symbol)
+            symbol_or_cik, self.headers, self.get_cik_for_symbol
+        )
 
     def get_company_specific_concept(self, symbol_or_cik, taxonomy, tag):
         """
@@ -1473,20 +1607,12 @@ class SECHelper:
                   or None if the data cannot be retrieved.
         """
         return _get_company_concept_request(
-            symbol_or_cik,
-            taxonomy,
-            tag,
-            self.headers,
-            self.get_cik_for_symbol)
+            symbol_or_cik, taxonomy, tag, self.headers, self.get_cik_for_symbol
+        )
 
     def get_aggregated_frames_data(
-            self,
-            taxonomy,
-            tag,
-            unit,
-            year,
-            quarter=None,
-            instantaneous=False):
+        self, taxonomy, tag, unit, year, quarter=None, instantaneous=False
+    ):
         """
         Fetches aggregated XBRL data across reporting entities for a specific concept
         and calendrical period. Useful for comparing a single metric across multiple
@@ -1507,13 +1633,32 @@ class SECHelper:
                   or None if the data cannot be retrieved.
         """
         return _get_frames_data_request(
-            taxonomy,
-            tag,
-            unit,
-            year,
-            self.headers,
-            quarter,
-            instantaneous)
+            taxonomy, tag, unit, year, self.headers, quarter, instantaneous
+        )
+
+    def select_better_report(self, report1, report2, stmt_type):
+        """
+        Compares two reports for the same period and selects the one with better data quality.
+        Simple approach: prefer reports with non-zero values for key metrics.
+        """
+        data1 = report1.get("data", {})
+        data2 = report2.get("data", {})
+
+        # Simple key metrics to check
+        key_metrics = ["Revenues", "OperatingIncomeLoss", "NetIncomeLoss"]
+
+        # Count non-zero values for each report
+        non_zero_count1 = sum(1 for metric in key_metrics if data1.get(metric, 0) != 0)
+        non_zero_count2 = sum(1 for metric in key_metrics if data2.get(metric, 0) != 0)
+
+        # Prefer report with more non-zero values
+        if non_zero_count1 > non_zero_count2:
+            return report1
+        elif non_zero_count2 > non_zero_count1:
+            return report2
+        else:
+            # If equal, prefer the more recent filing
+            return report1 if report1["filedAt"] >= report2["filedAt"] else report2
 
     def get_income_statement(self, symbol, limit=5, report_type="ALL"):
         """
@@ -1529,10 +1674,13 @@ class SECHelper:
             list: A list of dictionaries with income statement data.
         """
         return _get_financial_statement_data(
-            symbol, "income_statement", limit, report_type,
+            symbol,
+            "income_statement",
+            limit,
+            report_type,
             self.headers,
             self.get_cik_for_symbol,
-            self.get_company_all_facts  # Pass the instance method
+            self.get_company_all_facts,  # Pass the instance method
         )
 
     def get_balance_sheet(self, symbol, limit=5, report_type="ALL"):
@@ -1549,10 +1697,13 @@ class SECHelper:
             list: A list of dictionaries with balance sheet data.
         """
         return _get_financial_statement_data(
-            symbol, "balance_sheet", limit, report_type,
+            symbol,
+            "balance_sheet",
+            limit,
+            report_type,
             self.headers,
             self.get_cik_for_symbol,
-            self.get_company_all_facts
+            self.get_company_all_facts,
         )
 
     def get_cash_flow_statement(self, symbol, limit=5, report_type="ALL"):
@@ -1569,8 +1720,11 @@ class SECHelper:
             list: A list of dictionaries with cash flow statement data.
         """
         return _get_financial_statement_data(
-            symbol, "cash_flow", limit, report_type,
+            symbol,
+            "cash_flow",
+            limit,
+            report_type,
             self.headers,
             self.get_cik_for_symbol,
-            self.get_company_all_facts
+            self.get_company_all_facts,
         )
