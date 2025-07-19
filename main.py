@@ -2,6 +2,7 @@
 
 from sec_financial_data.sec_financial_data import SECHelper
 import json
+import sys
 
 
 def main():
@@ -10,7 +11,11 @@ def main():
     # with a contact email for responsible usage as per SEC guidelines.
     helper = SECHelper(user_agent_string="sec_api/0.1.0 (arun.mittal.sjsu@gmail.com)")
 
-    symbol = "AAPL"  # Example: Apple Inc.
+    # Accept symbol as a command-line argument, default to 'AAPL'
+    if len(sys.argv) > 1:
+        symbol = sys.argv[1].upper()
+    else:
+        symbol = "AAPL"  # Example: Apple Inc.
 
     print(f"\n--- Getting CIK for {symbol} ---")
     cik = helper.get_cik_for_symbol(symbol)
@@ -23,7 +28,7 @@ def main():
     # --- Income Statement 10-K Only ---
     print(f"\n--- Getting Income Statement for {symbol} (10-K, limit 5) ---")
     income_statement_10k = helper.get_income_statement(
-        symbol, limit=5, report_type="10-K"
+        symbol, limit=10, report_type="10-K"
     )
     if income_statement_10k:
         print(f"Found {len(income_statement_10k)} 10-K reports.")
@@ -33,7 +38,7 @@ def main():
 
     # --- Balance Sheet 10-K Only ---
     print(f"\n--- Getting Balance Sheet for {symbol} (10-K, limit 5) ---")
-    balance_sheet_10k = helper.get_balance_sheet(symbol, limit=5, report_type="10-K")
+    balance_sheet_10k = helper.get_balance_sheet(symbol, limit=10, report_type="10-K")
     if balance_sheet_10k:
         print(f"Found {len(balance_sheet_10k)} 10-K reports.")
         print(json.dumps(balance_sheet_10k, indent=2))
@@ -42,7 +47,7 @@ def main():
 
     # --- Cash Flow Statement 10-K Only ---
     print(f"\n--- Getting Cash Flow Statement for {symbol} (10-K, limit 5) ---")
-    cash_flow_10k = helper.get_cash_flow_statement(symbol, limit=5, report_type="10-K")
+    cash_flow_10k = helper.get_cash_flow_statement(symbol, limit=10, report_type="10-K")
     if cash_flow_10k:
         print(f"Found {len(cash_flow_10k)} 10-K reports.")
         print(json.dumps(cash_flow_10k, indent=2))
@@ -141,6 +146,22 @@ def main():
             )
     else:
         print(f"No aggregated Assets data found for Q1 {year_for_frames}.")
+
+    # --- DEBUG: Print all available XBRL tags for 2023 ---
+    print(f"\n--- DEBUG: All available XBRL tags for {symbol} (2023) ---")
+    all_facts = helper.get_company_all_facts(symbol)
+    if all_facts and "facts" in all_facts and "us-gaap" in all_facts["facts"]:
+        us_gaap = all_facts["facts"]["us-gaap"]
+        for tag, tag_data in us_gaap.items():
+            if "units" in tag_data:
+                for unit, facts in tag_data["units"].items():
+                    for fact in facts:
+                        if fact.get("fy") == 2023:
+                            print(
+                                f"Tag: {tag}, Unit: {unit}, Value: {fact.get('val')}, Form: {fact.get('form')}, End: {fact.get('end')}"
+                            )
+    else:
+        print("No us-gaap facts found.")
 
 
 if __name__ == "__main__":
