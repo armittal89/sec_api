@@ -1830,7 +1830,7 @@ class SECHelper:
             # If equal, prefer the more recent filing
             return report1 if report1["filedAt"] >= report2["filedAt"] else report2
 
-    def get_income_statement(self, symbol, limit=5, report_type="ALL"):
+    def get_income_statement(self, symbol, limit=5, report_type="ALL", split_data=None):
         """
         Fetches and formats recent income statement data for a given symbol.
         Automatically adjusts for the latest stock split.
@@ -1839,9 +1839,11 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
+            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
         Returns:
             list: A list of dictionaries with income statement data.
         """
+        logger.info(f"[DEBUG] get_income_statement called for {symbol}")
         data = _get_financial_statement_data(
             symbol,
             "income_statement",
@@ -1851,9 +1853,15 @@ class SECHelper:
             self.get_cik_for_symbol,
             self.get_company_all_facts,  # Pass the instance method
         )
-        return self.adjust_financials_for_latest_split(data, symbol_or_cik=symbol)
+        logger.info(
+            f"[DEBUG] _get_financial_statement_data returned {len(data) if data else 0} items"
+        )
+        logger.info(f"[DEBUG] Calling adjust_financials_for_latest_split for {symbol}")
+        return self.adjust_financials_for_latest_split(
+            data, symbol_or_cik=symbol, split=split_data
+        )
 
-    def get_balance_sheet(self, symbol, limit=5, report_type="ALL"):
+    def get_balance_sheet(self, symbol, limit=5, report_type="ALL", split_data=None):
         """
         Fetches and formats recent balance sheet data for a given symbol.
         Automatically adjusts for the latest stock split.
@@ -1862,9 +1870,11 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
+            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
         Returns:
             list: A list of dictionaries with balance sheet data.
         """
+        logger.info(f"[DEBUG] get_balance_sheet called for {symbol}")
         data = _get_financial_statement_data(
             symbol,
             "balance_sheet",
@@ -1874,9 +1884,17 @@ class SECHelper:
             self.get_cik_for_symbol,
             self.get_company_all_facts,
         )
-        return self.adjust_financials_for_latest_split(data, symbol_or_cik=symbol)
+        logger.info(
+            f"[DEBUG] _get_financial_statement_data returned {len(data) if data else 0} items"
+        )
+        logger.info(f"[DEBUG] Calling adjust_financials_for_latest_split for {symbol}")
+        return self.adjust_financials_for_latest_split(
+            data, symbol_or_cik=symbol, split=split_data
+        )
 
-    def get_cash_flow_statement(self, symbol, limit=5, report_type="ALL"):
+    def get_cash_flow_statement(
+        self, symbol, limit=5, report_type="ALL", split_data=None
+    ):
         """
         Fetches and formats recent cash flow statement data for a given symbol.
         Automatically adjusts for the latest stock split.
@@ -1885,9 +1903,11 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
+            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
         Returns:
             list: A list of dictionaries with cash flow statement data.
         """
+        logger.info(f"[DEBUG] get_cash_flow_statement called for {symbol}")
         data = _get_financial_statement_data(
             symbol,
             "cash_flow",
@@ -1897,13 +1917,21 @@ class SECHelper:
             self.get_cik_for_symbol,
             self.get_company_all_facts,
         )
-        return self.adjust_financials_for_latest_split(data, symbol_or_cik=symbol)
+        logger.info(
+            f"[DEBUG] _get_financial_statement_data returned {len(data) if data else 0} items"
+        )
+        logger.info(f"[DEBUG] Calling adjust_financials_for_latest_split for {symbol}")
+        return self.adjust_financials_for_latest_split(
+            data, symbol_or_cik=symbol, split=split_data
+        )
 
     def find_stock_splits(self, symbol_or_cik, max_filings=50, max_workers=5):
         """
         Find stock split events for a company by parsing SEC filings, using threads for speed.
         Returns the most relevant/accurate split event (most recent by date, then earliest filing_date).
         """
+        logger.info(f"[DEBUG] find_stock_splits called for {symbol_or_cik}")
+
         import requests
         import re
         from datetime import datetime, timedelta
@@ -1912,8 +1940,10 @@ class SECHelper:
         # Step 1: Resolve CIK
         cik = symbol_or_cik
         if not cik.isdigit() or len(cik) != 10:
+            logger.info(f"[DEBUG] Resolving CIK for {symbol_or_cik}")
             cik = self.get_cik_for_symbol(symbol_or_cik)
             if not cik:
+                logger.info(f"[DEBUG] Could not find CIK for {symbol_or_cik}")
                 print(f"Could not find CIK for {symbol_or_cik}")
                 return None
 
@@ -2129,6 +2159,7 @@ class SECHelper:
                 continue
         filtered_splits = [v[3] for v in best_split_for_ratio.values()]
         if not filtered_splits:
+            logger.info(f"[DEBUG] No splits found for {symbol_or_cik}")
             return None
         # Return only the latest split (by date, then best form, then earliest filing_date)
         filtered_splits.sort(
@@ -2139,15 +2170,27 @@ class SECHelper:
             ),
             reverse=True,
         )
+        logger.info(
+            f"[DEBUG] Returning split for {symbol_or_cik}: {filtered_splits[0]}"
+        )
         return filtered_splits[0]
 
     def _get_latest_split(self, symbol_or_cik):
         """
         Returns the latest split for the symbol, using cache if available.
         """
+        logger.info(f"[DEBUG] _get_latest_split called for {symbol_or_cik}")
+
         if symbol_or_cik in self._latest_split_cache:
+            logger.info(
+                f"[DEBUG] Found {symbol_or_cik} in cache: {self._latest_split_cache[symbol_or_cik]}"
+            )
             return self._latest_split_cache[symbol_or_cik]
+
+        logger.info(f"[DEBUG] {symbol_or_cik} not in cache, calling find_stock_splits")
         split = self.find_stock_splits(symbol_or_cik)
+        logger.info(f"[DEBUG] find_stock_splits returned: {split}")
+
         self._latest_split_cache[symbol_or_cik] = split
         return split
 
@@ -2161,21 +2204,49 @@ class SECHelper:
         Returns:
             list: Adjusted data.
         """
+        logger.info(
+            f"[DEBUG] adjust_financials_for_latest_split called with data length: {len(data) if data else 0}"
+        )
+        logger.info(f"[DEBUG] symbol_or_cik: {symbol_or_cik}")
+        logger.info(f"[DEBUG] split provided: {split is not None}")
+
         if not data:
+            logger.info("[DEBUG] No data provided, returning empty data")
             return data
+
         if not split:
+            logger.info("[DEBUG] No split provided, checking symbol_or_cik")
             if not symbol_or_cik:
+                logger.info(
+                    "[DEBUG] No symbol_or_cik provided, returning unadjusted data"
+                )
                 return data
+            logger.info(f"[DEBUG] Calling _get_latest_split for {symbol_or_cik}")
             split = self._get_latest_split(symbol_or_cik)
+            logger.info(f"[DEBUG] _get_latest_split returned: {split}")
+
         if not split or "ratio" not in split or "date" not in split:
+            logger.info(f"[DEBUG] Invalid split data: {split}")
             return data
+
         ratio = split["ratio"]
         split_date = split["date"]
-        for item in data:
+        logger.info(f"[DEBUG] Using split ratio: {ratio}, split date: {split_date}")
+
+        adjusted_count = 0
+        for i, item in enumerate(data):
             item_date = (
                 item.get("date") or item.get("fiscalDateEnding") or item.get("endDate")
             )
+            logger.info(
+                f"[DEBUG] Item {i}: date={item_date}, symbol={item.get('symbol', 'N/A')}"
+            )
+
             if item_date and item_date < split_date:
+                logger.info(
+                    f"[DEBUG] Adjusting item {i} (date {item_date} < split_date {split_date})"
+                )
+
                 # Adjust per-share metrics
                 for field in [
                     "eps",
@@ -2184,7 +2255,12 @@ class SECHelper:
                     "earningsPerShareDiluted",
                 ]:
                     if field in item and item[field] is not None:
+                        old_value = item[field]
                         item[field] /= ratio
+                        logger.info(
+                            f"[DEBUG] Adjusted {field}: {old_value} -> {item[field]}"
+                        )
+
                 # Adjust share count metrics
                 for field in [
                     "weightedAverageShsOut",
@@ -2194,8 +2270,20 @@ class SECHelper:
                     "commonStockSharesOutstanding",
                 ]:
                     if field in item and item[field] is not None:
+                        old_value = item[field]
                         item[field] *= ratio
+                        logger.info(
+                            f"[DEBUG] Adjusted {field}: {old_value} -> {item[field]}"
+                        )
+
                 item["_split_adjusted"] = True
                 item["_split_ratio"] = ratio
                 item["_split_date"] = split_date
+                adjusted_count += 1
+            else:
+                logger.info(
+                    f"[DEBUG] Item {i} not adjusted (date {item_date} >= split_date {split_date})"
+                )
+
+        logger.info(f"[DEBUG] Total items adjusted: {adjusted_count}/{len(data)}")
         return data
