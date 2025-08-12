@@ -147,21 +147,21 @@ def main():
     else:
         print(f"No aggregated Assets data found for Q1 {year_for_frames}.")
 
-    # --- DEBUG: Print all available XBRL tags for 2023 ---
-    # print(f"\n--- DEBUG: All available XBRL tags for {symbol} (2023) ---")
-    # all_facts = helper.get_company_all_facts(symbol)
-    # if all_facts and "facts" in all_facts and "us-gaap" in all_facts["facts"]:
-    #     us_gaap = all_facts["facts"]["us-gaap"]
-    #     for tag, tag_data in us_gaap.items():
-    #         if "units" in tag_data:
-    #             for unit, facts in tag_data["units"].items():
-    #                 for fact in facts:
-    #                     if fact.get("fy") == 2023:
-    #                         print(
-    #                             f"Tag: {tag}, Unit: {unit}, Value: {fact.get('val')}, Form: {fact.get('form')}, End: {fact.get('end')}"
-    #                         )
-    # else:
-    #     print("No us-gaap facts found.")
+    # --- DEBUG: Print all available XBRL tags for 2024 ---
+    print(f"\n--- DEBUG: All available XBRL tags for {symbol} (2024) ---")
+    all_facts = helper.get_company_all_facts(symbol)
+    if all_facts and "facts" in all_facts and "us-gaap" in all_facts["facts"]:
+        us_gaap = all_facts["facts"]["us-gaap"]
+        for tag, tag_data in us_gaap.items():
+            if "units" in tag_data:
+                for unit, facts in tag_data["units"].items():
+                    for fact in facts:
+                        if fact.get("fy") == 2024:
+                            print(
+                                f"Tag: {tag}, Unit: {unit}, Value: {fact.get('val')}, Form: {fact.get('form')}, End: {fact.get('end')}"
+                            )
+    else:
+        print("No us-gaap facts found.")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+from typing import Optional, Dict, Any, List
 
 # Base URLs for SEC EDGAR APIs
 SEC_BASE_URL = "https://www.sec.gov"
@@ -318,17 +319,20 @@ def _get_financial_statement_data(
             "DisposalGroupIncludingDiscontinuedOperationDeferredRevenueCurrent",
             "EarningsPerShareBasic",
             "EarningsPerShareDiluted",
+            "FinanceLeaseInterestExpense",
             "FinancialGuaranteeInsuranceContractsAcceleratedPremiumRevenueAmount",
             "GeneralAndAdministrativeExpense",
             "GrossProfit",
             "IncomeBeforeIncomeTax",
             "IncomeBeforeTax",
             "IncomeLossFromContinuingOperationsBeforeIncomeTax",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
             "IncomeTaxExpenseBenefit",
             "IncreaseDecreaseInDeferredRevenue",
             "InsuranceServicesRevenue",
             "InterestExpense",
             "InterestIncome",
+            "InterestIncomeOther",
             "InterestIncomeExpenseNet",
             "InterestRevenueExpenseNet",
             "MarketDataRevenue",
@@ -338,6 +342,7 @@ def _get_financial_statement_data(
             "OperatingExpenses",
             "OperatingIncomeLoss",
             "OtherCostOfOperatingRevenue",
+            "OtherNonoperatingIncomeExpense",
             "OtherOperatingExpenses",
             "ProfitLossBeforeTax",
             "RelatedPartyTransactionOtherRevenuesFromTransactionsWithRelatedParty",
@@ -350,6 +355,7 @@ def _get_financial_statement_data(
             "RevenueRemainingPerformanceObligation",
             "RevenueRemainingPerformanceObligationPercentage",
             "Revenues",
+            "RoyaltyIncomeNonoperating",
             "SalesRevenueGoodsNet",
             "SalesRevenueNet",
             "SalesRevenueServicesNet",
@@ -985,24 +991,59 @@ def _get_financial_statement_data(
         depreciationAndAmortization = get_val("DepreciationDepletionAndAmortization")
 
         operatingIncome = get_val("OperatingIncomeLoss")
-        # If operatingIncome is zero from tag, try to derive it
-        if (
-            operatingIncome == 0
-            and grossProfit != 0
-            and (
-                researchAndDevelopmentExpense != 0
-                or generalAndAdministrativeExpenses != 0
-                or sellingAndMarketingExpenses != 0
-                or otherExpenses_val != 0
+
+        # If operatingIncome is zero from tag, try alternative methods
+        if operatingIncome == 0:
+            # Method 1: Try working backwards from pre-tax income (most accurate when available)
+            preTaxIncome = get_val(
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
             )
-        ):
-            operatingIncome = grossProfit - (
-                researchAndDevelopmentExpense
-                + generalAndAdministrativeExpenses
-                + sellingAndMarketingExpenses
-                + otherExpenses_val
-                + depreciationAndAmortization
-            )  # More complete OpEx for derivation
+            if preTaxIncome != 0:
+                # Add back financing costs and non-operating items
+                interestExpense = get_val("InterestExpense")
+                interestIncome = get_val("InterestIncomeOther")
+                otherNonOperating = get_val("OtherNonoperatingIncomeExpense")
+                royaltyIncomeNonOperating = get_val("RoyaltyIncomeNonoperating")
+                financeLeaseInterest = get_val("FinanceLeaseInterestExpense")
+
+                # Calculate net non-operating expenses to add back
+                netInterestExpense = (
+                    interestExpense + financeLeaseInterest - interestIncome
+                )
+                # Note: OtherNonoperatingIncomeExpense is typically negative for expenses
+                # RoyaltyIncomeNonoperating is positive income, so we subtract it
+                netOtherNonOperating = -otherNonOperating - royaltyIncomeNonOperating
+
+                # Operating Income = Pre-tax Income + Net Interest Expense + Net Other Non-operating Expenses
+                operatingIncome = (
+                    preTaxIncome + netInterestExpense + netOtherNonOperating
+                )
+
+                if operatingIncome != 0:
+                    logger.info(
+                        f"[DEBUG] Derived operating income from pre-tax income: {operatingIncome} = {preTaxIncome} + {netInterestExpense} + {netOtherNonOperating}"
+                    )
+
+            # Method 2: If pre-tax income method didn't work, fall back to gross profit calculation
+            if operatingIncome == 0:
+                if grossProfit != 0 and (
+                    researchAndDevelopmentExpense != 0
+                    or generalAndAdministrativeExpenses != 0
+                    or sellingAndMarketingExpenses != 0
+                    or otherExpenses_val != 0
+                ):
+                    operatingIncome = grossProfit - (
+                        researchAndDevelopmentExpense
+                        + generalAndAdministrativeExpenses
+                        + sellingAndMarketingExpenses
+                        + otherExpenses_val
+                        + depreciationAndAmortization
+                    )  # More complete OpEx for derivation
+
+                    if operatingIncome != 0:
+                        logger.info(
+                            f"[DEBUG] Derived operating income from gross profit: {operatingIncome} = {grossProfit} - expenses"
+                        )
 
         ebitda = operatingIncome + depreciationAndAmortization  # Derived
         ebit = operatingIncome  # ebit is Operating Income
@@ -1639,7 +1680,7 @@ def _get_financial_statement_data(
             )  # Make positive
             freeCashFlow_cf = (
                 netCashProvidedByOperatingActivities
-                + investmentsInPropertyPlantAndEquipment
+                - investmentsInPropertyPlantAndEquipment
             )  # Capex is negative
 
             incomeTaxesPaid_cf = get_val("IncomeTaxesPaidNet")
@@ -1965,7 +2006,16 @@ class SECHelper:
         accession_numbers = filings.get("accessionNumber", [])
         forms = filings.get("form", [])
         filing_dates = filings.get("filingDate", [])
-        relevant_forms = {"8-K", "10-K", "10-Q", "DEF 14A", "DEF 14C"}
+        relevant_forms = {
+            "8-K",
+            "10-K",
+            "10-Q",
+            "DEF 14A",
+            "DEF 14C",
+            "424B3",
+            "424B4",
+            "424B5",
+        }
         split_candidates = [
             (acc, form, date)
             for acc, form, date in zip(accession_numbers, forms, filing_dates)
@@ -1993,6 +2043,32 @@ class SECHelper:
             "eighteen": 18,
             "nineteen": 19,
             "twenty": 20,
+            "twenty-one": 21,
+            "twenty-two": 22,
+            "twenty-three": 23,
+            "twenty-four": 24,
+            "twenty-five": 25,
+            "twenty-six": 26,
+            "twenty-seven": 27,
+            "twenty-eight": 28,
+            "twenty-nine": 29,
+            "thirty": 30,
+            "thirty-one": 31,
+            "thirty-two": 32,
+            "thirty-three": 33,
+            "thirty-four": 34,
+            "thirty-five": 35,
+            "thirty-six": 36,
+            "thirty-seven": 37,
+            "thirty-eight": 38,
+            "thirty-nine": 39,
+            "forty": 40,
+            "fifty": 50,
+            "sixty": 60,
+            "seventy": 70,
+            "eighty": 80,
+            "ninety": 90,
+            "hundred": 100,
         }
 
         # Strong announcement keywords
@@ -2001,14 +2077,71 @@ class SECHelper:
             "approved",
             "announced",
             "board of directors",
+            "executed",
+            "effected",
+            "implemented",
+            "completed",
+            "authorized",
+            "resolved",
+            "determined",
+            "decided",
         ]
 
         def is_announcement_context(context):
             context_lower = context.lower()
             return any(word in context_lower for word in announcement_keywords)
 
-        # Filing type priority (lower is better)
-        form_priority = {"8-K": 1, "DEF 14A": 2, "10-K": 3, "10-Q": 3}
+        def _is_valid_split_context(context):
+            """
+            Additional validation for split context to catch more cases.
+            This helps with announcements that might not use traditional announcement keywords.
+            """
+            context_lower = context.lower()
+
+            # Check for execution/completion language
+            execution_keywords = [
+                "executed",
+                "effected",
+                "implemented",
+                "completed",
+                "carried out",
+            ]
+            if any(word in context_lower for word in execution_keywords):
+                return True
+
+            # Check for dividend-related language (stock splits are often effected as dividends)
+            dividend_keywords = ["dividend", "special dividend", "stock dividend"]
+            if any(word in context_lower for word in dividend_keywords):
+                return True
+
+            # Check for date-specific language (often indicates execution)
+            date_patterns = [
+                r"on\s+\w+\s+\d{1,2},\s+\d{4}",  # "on July 15, 2022"
+                r"effective\s+\w+\s+\d{1,2},\s+\d{4}",  # "effective July 1, 2022"
+                r"record\s+date\s+of\s+\w+\s+\d{1,2},\s+\d{4}",  # "record date of July 1, 2022"
+            ]
+            for pattern in date_patterns:
+                if re.search(pattern, context_lower):
+                    return True
+
+            return False
+
+        # Filing type priority (lower number = higher priority)
+        # 8-K: Highest priority - used for immediate announcements of significant events
+        # DEF 14A: High priority - proxy statements often contain board decisions
+        # 10-Q: Medium priority - quarterly reports may mention recent splits
+        # 10-K: Lower priority - annual reports may mention splits but are less timely
+        # 424B*: Lower priority - prospectus filings, less common for splits
+        form_priority = {
+            "8-K": 1,  # Highest priority - immediate announcements
+            "10-Q": 2,  # High priority - quarterly reports
+            "10-K": 3,  # Medium priority - annual reports
+            "DEF 14A": 4,  # Lower priority - proxy statements
+            "DEF 14C": 4,  # Lower priority - proxy statements
+            "424B3": 5,  # Lower priority - prospectus filings
+            "424B4": 5,  # Lower priority - prospectus filings
+            "424B5": 5,  # Lower priority - prospectus filings
+        }
 
         def process_filing(args):
             acc, form, date = args
@@ -2022,17 +2155,91 @@ class SECHelper:
             # Look for split keywords and ratio
             if re.search(r"(stock|share) split", filing_text, re.IGNORECASE):
                 ratio = None
-                context_window = 40
+                context_window = 60  # Increased context window for better detection
                 found_context = None
                 ratio_patterns = [
                     r"(\d+)[-–]for[-–](\d+)\s+(?:stock|share)?\s*split",
                     r"(\d+)\s*for\s*(\d+)\s+(?:stock|share)?\s*split",
                     r"(\d+)[-–]for[-–](\d+)",
                     r"(\d+)\s*for\s*(\d+)",
+                    # Additional patterns for better coverage
+                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split",
+                    r"(\d+)\s*for\s*(\d+)\s+share\s+split",
+                    r"(\d+)\s*for\s*(\d+)\s+split",
+                    # Pattern for "executed a X-for-Y stock split" format
+                    r"executed\s+a\s+(\d+)[-–]for[-–](\d+)\s+stock\s+split",
+                    r"executed\s+a\s+(\d+)\s*for\s*(\d+)\s+stock\s+split",
+                    # Pattern for "effected in the form of" format
+                    r"(\d+)[-–]for[-–](\d+)\s+stock\s+split.*effected",
+                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split.*effected",
+                    # Pattern for "X-for-Y split of" format
+                    r"(\d+)[-–]for[-–](\d+)\s+split\s+of",
+                    r"(\d+)\s*for\s*(\d+)\s+split\s+of",
+                    # Pattern for "X-for-Y stock split effected" format
+                    r"(\d+)[-–]for[-–](\d+)\s+stock\s+split\s+effected",
+                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split\s+effected",
+                    # Hybrid patterns for "X-for-one" format (where X is numeric, "one" is word)
+                    r"(\d+)[-–]for[-–](\w+)\s+(?:stock|share)?\s*split",
+                    r"(\d+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
+                    r"(\d+)[-–]for[-–](\w+)",
+                    r"(\d+)\s*for\s*(\w+)",
+                    r"(\d+)\s*for\s*(\w+)\s+stock\s+split",
+                    r"(\d+)\s*for\s*(\w+)\s+share\s+split",
+                    r"(\d+)\s*for\s*(\w+)\s+split",
+                    # Pattern for "executed a X-for-one stock split" format
+                    r"executed\s+a\s+(\d+)[-–]for[-–](\w+)\s+stock\s+split",
+                    r"executed\s+a\s+(\d+)\s*for\s*(\w+)\s+stock\s+split",
+                    # Pattern for "effected in the form of" format with hybrid
+                    r"(\d+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
+                    r"(\d+)\s*for\s*(\w+)\s+stock\s+split.*effected",
+                    # Additional specific patterns for common formats
+                    r"(\d+)\s*for\s*one\s+stock\s+split",
+                    r"(\d+)\s*for\s*one\s+share\s+split",
+                    r"(\d+)\s*for\s*one\s+split",
+                    r"(\d+)[-–]for[-–]one\s+stock\s+split",
+                    r"(\d+)[-–]for[-–]one\s+share\s+split",
+                    r"(\d+)[-–]for[-–]one\s+split",
+                    # Patterns for reverse splits (one-for-X format)
+                    r"one\s*for\s*(\d+)\s+stock\s+split",
+                    r"one\s*for\s*(\d+)\s+share\s+split",
+                    r"one\s*for\s*(\d+)\s+split",
+                    r"one[-–]for[-–](\d+)\s+stock\s+split",
+                    r"one[-–]for[-–](\d+)\s+share\s+split",
+                    r"one[-–]for[-–](\d+)\s+split",
+                    # Patterns for special dividend language
+                    r"(\d+)\s*for\s*(\w+)\s+special\s+dividend",
+                    r"(\d+)\s*for\s*(\w+)\s+stock\s+dividend",
+                    r"(\d+)\s*for\s*(\w+)\s+share\s+dividend",
                 ]
                 for pat in ratio_patterns:
                     for match in re.finditer(pat, filing_text, re.IGNORECASE):
-                        num, denom = map(int, match.groups())
+                        groups = match.groups()
+                        num_str, denom_str = groups
+
+                        # Handle hybrid patterns where first is numeric, second might be word
+                        # Also handle reverse splits (one-for-X) and special dividends
+                        try:
+                            num = int(num_str)
+                        except ValueError:
+                            # Check if it's "one" for reverse splits
+                            if num_str.lower() == "one":
+                                num = 1
+                            else:
+                                continue
+
+                        # Try to convert denominator to int, if it fails, try word lookup
+                        try:
+                            denom = int(denom_str)
+                        except ValueError:
+                            # It's a word, look it up in number_words
+                            denom = number_words.get(denom_str.lower())
+                            if not denom:
+                                continue
+
+                        logger.info(
+                            f"[DEBUG] Pattern matched: {pat} -> {num_str}:{denom_str} = {num}:{denom}"
+                        )
+
                         start, end = match.span()
                         context = filing_text[
                             max(0, start - context_window) : min(
@@ -2045,9 +2252,15 @@ class SECHelper:
                             and 0 < denom < 100
                             and re.search(r"split", context, re.IGNORECASE)
                         ):
-                            if is_announcement_context(context):
+                            # More flexible context validation - check if it's a valid split context
+                            if is_announcement_context(
+                                context
+                            ) or _is_valid_split_context(context):
                                 ratio = num / denom
                                 found_context = context
+                                logger.info(
+                                    f"[DEBUG] Found valid split ratio {num}:{denom} = {ratio} in filing {acc} for {symbol_or_cik}"
+                                )
                                 break
                     if ratio:
                         break
@@ -2058,6 +2271,30 @@ class SECHelper:
                     r"(\w+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
                     r"(\w+)[-–]for[-–](\w+)",
                     r"(\w+)\s*for\s*(\w+)",
+                    # Additional patterns for better coverage
+                    r"(\w+)\s*for\s*(\w+)\s+stock\s+split",
+                    r"(\w+)\s*for\s*(\w+)\s+share\s+split",
+                    r"(\w+)\s*for\s*(\w+)\s+split",
+                    # Pattern for "executed a X-for-Y stock split" format
+                    r"executed\s+a\s+(\w+)[-–]for[-–](\w+)\s+stock\s+split",
+                    r"executed\s+a\s+(\w+)\s*for\s*(\w+)\s+stock\s+split",
+                    # Pattern for "effected in the form of" format
+                    r"(\w+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
+                    r"(\w+)\s*for\s*(\w+)\s+stock\s+split.*effected",
+                    # Additional word-based patterns for common formats
+                    r"twenty\s*for\s*one\s+stock\s+split",
+                    r"twenty\s*for\s*one\s+share\s+split",
+                    r"twenty\s*for\s*one\s+split",
+                    r"twenty[-–]for[-–]one\s+stock\s+split",
+                    r"twenty[-–]for[-–]one\s+share\s+split",
+                    r"twenty[-–]for[-–]one\s+split",
+                    # Patterns for other common ratios
+                    r"(\w+)\s*for\s*one\s+stock\s+split",
+                    r"(\w+)\s*for\s*one\s+share\s+split",
+                    r"(\w+)\s*for\s*one\s+split",
+                    r"(\w+)[-–]for[-–]one\s+stock\s+split",
+                    r"(\w+)[-–]for[-–]one\s+share\s+split",
+                    r"(\w+)[-–]for[-–]one\s+split",
                 ]
                 for pat in word_ratio_patterns:
                     for match in re.finditer(pat, filing_text, re.IGNORECASE):
@@ -2078,7 +2315,10 @@ class SECHelper:
                             and 0 < denom < 100
                             and re.search(r"split", context, re.IGNORECASE)
                         ):
-                            if is_announcement_context(context):
+                            # More flexible context validation - check if it's a valid split context
+                            if is_announcement_context(
+                                context
+                            ) or _is_valid_split_context(context):
                                 ratio = num / denom
                                 found_context = context
                                 break
@@ -2098,7 +2338,18 @@ class SECHelper:
                     except Exception:
                         split_date = date
                 else:
-                    split_date = date
+                    # Try alternative date formats
+                    alt_date_match = re.search(
+                        r"(\d{1,2})/(\d{1,2})/(\d{4})", filing_text
+                    )
+                    if alt_date_match:
+                        try:
+                            month, day, year = alt_date_match.groups()
+                            split_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                        except Exception:
+                            split_date = date
+                    else:
+                        split_date = date
 
                 if ratio:
                     return {
@@ -2111,6 +2362,7 @@ class SECHelper:
                         "context": found_context,
                     }
             return None
+            return None
 
         splits = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -2122,7 +2374,7 @@ class SECHelper:
                 if result:
                     splits.append(result)
 
-        # For each ratio, only keep the split with the earliest date and best form
+        # For each ratio, only keep the split with the earliest announcement date and best form
         best_split_for_ratio = {}
         best_form_for_ratio = {}
         for split in splits:
@@ -2139,6 +2391,7 @@ class SECHelper:
                 best_form_for_ratio[key] = pri
             else:
                 old_date, old_pri, old_filing_date, _ = best_split_for_ratio[key]
+                # Prioritize earliest announcement date, then best form, then earliest filing date
                 if (
                     split["date"] < old_date
                     or (split["date"] == old_date and pri < old_pri)
@@ -2161,17 +2414,39 @@ class SECHelper:
         if not filtered_splits:
             logger.info(f"[DEBUG] No splits found for {symbol_or_cik}")
             return None
-        # Return only the latest split (by date, then best form, then earliest filing_date)
+
+        # Return the split with the EARLIEST announcement date (not latest)
+        # This is crucial for proper financial data adjustment
+        #
+        # Explanation of the logic:
+        # 1. We want the EARLIEST announcement date because:
+        #    - Financial data from dates BEFORE the split announcement should be adjusted
+        #    - The 2021-12-31 financial record needs to be adjusted for a split announced in 2021
+        #    - If we used the latest date (2023-06-02), the 2021 data wouldn't be adjusted
+        #
+        # 2. Among splits with the same announcement date, we prioritize:
+        #    - 8-K filings (immediate announcements) over 10-K filings (annual reports)
+        #    - Earlier filing dates when form types are the same
+        #
+        # 3. This ensures that when someone looks at 2021 financial data, it's properly
+        #    adjusted for the stock split that was announced during that period
+        #
+        # IMPORTANT: For financial data adjustment, we use the FILING DATE, not the announcement date
+        # because the filing date represents when the split information was actually made public
+        # Sort splits by earliest announcement date, then form priority, then filing date
         filtered_splits.sort(
             key=lambda s: (
-                s["date"],
-                -form_priority.get(s["filing"], 4),
-                s["filing_date"],
+                s["date"],  # Earliest announcement date first
+                form_priority.get(
+                    s["filing"], 4
+                ),  # Lower priority number first (8-K before 10-K)
+                s["filing_date"],  # Earliest filing date first
             ),
-            reverse=True,
+            reverse=False,  # Changed from True to False to get earliest date
         )
+
         logger.info(
-            f"[DEBUG] Returning split for {symbol_or_cik}: {filtered_splits[0]}"
+            f"[DEBUG] Selected split: ratio={filtered_splits[0]['ratio']}, announcement_date={filtered_splits[0]['date']}, filing_date={filtered_splits[0]['filing_date']}, form={filtered_splits[0]['filing']}"
         )
         return filtered_splits[0]
 
@@ -2229,61 +2504,96 @@ class SECHelper:
             logger.info(f"[DEBUG] Invalid split data: {split}")
             return data
 
-        ratio = split["ratio"]
-        split_date = split["date"]
-        logger.info(f"[DEBUG] Using split ratio: {ratio}, split date: {split_date}")
+        # Use the stock splits module for adjustment
+        from .stock_splits import StockSplitDetector
 
-        adjusted_count = 0
-        for i, item in enumerate(data):
-            item_date = (
-                item.get("date") or item.get("fiscalDateEnding") or item.get("endDate")
-            )
-            logger.info(
-                f"[DEBUG] Item {i}: date={item_date}, symbol={item.get('symbol', 'N/A')}"
+        detector = StockSplitDetector(self.headers)
+        return detector.adjust_financials_for_latest_split(data, split)
+
+    def get_stock_splits(
+        self, symbol_or_cik: str, max_filings: int = 50, max_workers: int = 5
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get stock split information for a company.
+
+        Args:
+            symbol_or_cik: Company symbol or CIK
+            max_filings: Maximum number of filings to analyze
+            max_workers: Number of worker threads for parallel processing
+
+        Returns:
+            Stock split information dict or None if no splits found
+        """
+        try:
+            from .stock_splits import StockSplitDetector
+
+            # Create stock split detector instance
+            detector = StockSplitDetector(self.headers)
+
+            # Find stock splits
+            split_info = detector.find_stock_splits(
+                symbol_or_cik, max_filings, max_workers
             )
 
-            if item_date and item_date < split_date:
+            if split_info:
                 logger.info(
-                    f"[DEBUG] Adjusting item {i} (date {item_date} < split_date {split_date})"
+                    f"[DEBUG] Found stock split for {symbol_or_cik}: {split_info}"
                 )
-
-                # Adjust per-share metrics
-                for field in [
-                    "eps",
-                    "epsDiluted",
-                    "earningsPerShareBasic",
-                    "earningsPerShareDiluted",
-                ]:
-                    if field in item and item[field] is not None:
-                        old_value = item[field]
-                        item[field] /= ratio
-                        logger.info(
-                            f"[DEBUG] Adjusted {field}: {old_value} -> {item[field]}"
-                        )
-
-                # Adjust share count metrics
-                for field in [
-                    "weightedAverageShsOut",
-                    "weightedAverageShsOutDil",
-                    "weightedAverageNumberOfSharesOutstandingBasic",
-                    "weightedAverageNumberOfDilutedSharesOutstanding",
-                    "commonStockSharesOutstanding",
-                ]:
-                    if field in item and item[field] is not None:
-                        old_value = item[field]
-                        item[field] *= ratio
-                        logger.info(
-                            f"[DEBUG] Adjusted {field}: {old_value} -> {item[field]}"
-                        )
-
-                item["_split_adjusted"] = True
-                item["_split_ratio"] = ratio
-                item["_split_date"] = split_date
-                adjusted_count += 1
             else:
-                logger.info(
-                    f"[DEBUG] Item {i} not adjusted (date {item_date} >= split_date {split_date})"
-                )
+                logger.info(f"[DEBUG] No stock split found for {symbol_or_cik}")
 
-        logger.info(f"[DEBUG] Total items adjusted: {adjusted_count}/{len(data)}")
-        return data
+            return split_info
+
+        except ImportError:
+            logger.warning(
+                "[DEBUG] Stock split module not available, falling back to legacy method"
+            )
+            return self.find_stock_splits(symbol_or_cik, max_filings, max_workers)
+        except Exception as e:
+            logger.error(f"[DEBUG] Error getting stock splits: {e}")
+            return None
+
+    def get_all_stock_splits(
+        self, symbol_or_cik: str, max_filings: int = 50, max_workers: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all stock split events for a company.
+
+        Args:
+            symbol_or_cik: Company symbol or CIK
+            max_filings: Maximum number of filings to analyze
+            max_workers: Number of worker threads for parallel processing
+
+        Returns:
+            List of stock split information dicts
+        """
+        try:
+            from .stock_splits import StockSplitDetector
+
+            # Create stock split detector instance
+            detector = StockSplitDetector(self.headers)
+
+            # Find all stock splits
+            all_splits = detector.get_all_stock_splits(
+                symbol_or_cik, max_filings, max_workers
+            )
+
+            if all_splits:
+                logger.info(
+                    f"[DEBUG] Found {len(all_splits)} stock splits for {symbol_or_cik}"
+                )
+            else:
+                logger.info(f"[DEBUG] No stock splits found for {symbol_or_cik}")
+
+            return all_splits
+
+        except ImportError:
+            logger.warning(
+                "[DEBUG] Stock split module not available, falling back to legacy method"
+            )
+            # Legacy fallback - return single split as list
+            split_info = self.find_stock_splits(symbol_or_cik, max_filings, max_workers)
+            return [split_info] if split_info else []
+        except Exception as e:
+            logger.error(f"[DEBUG] Error getting all stock splits: {e}")
+            return []
