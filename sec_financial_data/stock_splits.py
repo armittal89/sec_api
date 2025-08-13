@@ -37,117 +37,43 @@ class StockSplitDetector:
         self._split_cache = {}  # Cache for split results
 
         # Number words dictionary for parsing word-based ratios
-        self.number_words = {
-            "one": 1,
-            "two": 2,
-            "three": 3,
-            "four": 4,
-            "five": 5,
-            "six": 6,
-            "seven": 7,
-            "eight": 8,
-            "nine": 9,
-            "ten": 10,
-            "eleven": 11,
-            "twelve": 12,
-            "thirteen": 13,
-            "fourteen": 14,
-            "fifteen": 15,
-            "sixteen": 16,
-            "seventeen": 17,
-            "eighteen": 18,
-            "nineteen": 19,
-            "twenty": 20,
-            "twenty-one": 21,
-            "twenty-two": 22,
-            "twenty-three": 23,
-            "twenty-four": 24,
-            "twenty-five": 25,
-            "twenty-six": 26,
-            "twenty-seven": 27,
-            "twenty-eight": 28,
-            "twenty-nine": 29,
-            "thirty": 30,
-            "thirty-one": 31,
-            "thirty-two": 32,
-            "thirty-three": 33,
-            "thirty-four": 34,
-            "thirty-five": 35,
-            "thirty-six": 36,
-            "thirty-seven": 37,
-            "thirty-eight": 38,
-            "thirty-nine": 39,
-            "forty": 40,
-            "fifty": 50,
-            "sixty": 60,
-            "seventy": 70,
-            "eighty": 80,
-            "ninety": 90,
-            "hundred": 100,
-        }
+        from .patterns import NUMBER_WORDS
+
+        self.number_words = NUMBER_WORDS
 
         # Filing type priority (lower number = higher priority)
-        self.form_priority = {
-            "8-K": 1,  # Highest priority - immediate announcements
-            "10-Q": 2,  # High priority - quarterly reports
-            "10-K": 3,  # Medium priority - annual reports
-            "DEF 14A": 4,  # Lower priority - proxy statements
-            "DEF 14C": 4,  # Lower priority - proxy statements
-            "424B3": 5,  # Lower priority - prospectus filings
-            "424B4": 5,  # Lower priority - prospectus filings
-            "424B5": 5,  # Lower priority - prospectus filings
-        }
+        from .patterns import FORM_PRIORITY
+
+        self.form_priority = FORM_PRIORITY
 
         # Announcement keywords for context validation
-        self.announcement_keywords = [
-            "declared",
-            "approved",
-            "announced",
-            "board of directors",
-            "executed",
-            "effected",
-            "implemented",
-            "completed",
-            "authorized",
-            "resolved",
-            "determined",
-            "decided",
-        ]
+        from .patterns import get_announcement_keywords
+
+        self.announcement_keywords = get_announcement_keywords()
 
         # OPTIMIZATION: Pre-compiled regex patterns for better performance
         self._compile_regex_patterns()
 
     def _compile_regex_patterns(self):
         """Pre-compile regex patterns for better performance."""
+        from .patterns import (
+            get_high_priority_patterns,
+            get_medium_priority_patterns,
+            get_low_priority_patterns,
+            get_context_patterns,
+        )
+
         # High-priority patterns (most common) - check these first
-        self.high_priority_patterns = [
-            re.compile(
-                r"(\d+)\s*for\s*one\s+stock\s+split", re.IGNORECASE
-            ),  # Most common: "20-for-one"
-            re.compile(r"(\d+)\s*for\s*one\s+split", re.IGNORECASE),
-            re.compile(r"(\d+)[-–]for[-–]one\s+stock\s+split", re.IGNORECASE),
-        ]
+        self.high_priority_patterns = get_high_priority_patterns()
 
         # Medium-priority patterns
-        self.medium_priority_patterns = [
-            re.compile(r"(\d+)\s*for\s*(\d+)\s+stock\s+split", re.IGNORECASE),
-            re.compile(r"(\d+)\s*for\s*(\d+)\s+split", re.IGNORECASE),
-            re.compile(r"(\d+)[-–]for[-–](\d+)\s+stock\s+split", re.IGNORECASE),
-        ]
+        self.medium_priority_patterns = get_medium_priority_patterns()
 
         # Low-priority patterns (check last)
-        self.low_priority_patterns = [
-            re.compile(r"(\d+)\s*for\s*(\w+)\s+stock\s+split", re.IGNORECASE),
-            re.compile(r"(\d+)\s*for\s*(\w+)\s+split", re.IGNORECASE),
-            re.compile(r"(\w+)\s*for\s*(\w+)\s+stock\s+split", re.IGNORECASE),
-        ]
+        self.low_priority_patterns = get_low_priority_patterns()
 
         # Context patterns
-        self.context_patterns = [
-            re.compile(r"executed\s+a\s+", re.IGNORECASE),
-            re.compile(r"effected\s+", re.IGNORECASE),
-            re.compile(r"implemented\s+", re.IGNORECASE),
-        ]
+        self.context_patterns = get_context_patterns()
 
     @lru_cache(maxsize=1000)
     def _resolve_cik(self, symbol: str) -> Optional[str]:
@@ -197,12 +123,9 @@ class StockSplitDetector:
         relevant_sections = []
 
         # Look for sections that are likely to contain stock split information
-        section_patterns = [
-            r"stock\s+split.*?(?=\n\n|\n[A-Z]|$)",
-            r"split.*?(?=\n\n|\n[A-Z]|$)",
-            r"capital\s+stock.*?(?=\n\n|\n[A-Z]|$)",
-            r"authorized\s+shares.*?(?=\n\n|\n[A-Z]|$)",
-        ]
+        from .patterns import get_section_patterns
+
+        section_patterns = get_section_patterns()
 
         for pattern in section_patterns:
             matches = re.finditer(pattern, filing_text, re.IGNORECASE | re.DOTALL)
@@ -230,72 +153,151 @@ class StockSplitDetector:
         Returns:
             Tuple of (numerator, denominator) or None if no match
         """
+        best_match = None
+        best_priority = float("inf")  # Lower number = higher priority
+
         # Check high-priority patterns first (most common cases)
-        for pattern in self.high_priority_patterns:
+        for i, pattern in enumerate(self.high_priority_patterns):
             match = pattern.search(text)
             if match:
                 num_str = match.group(1)
                 try:
-                    num = int(num_str)
+                    # Handle both integer and decimal ratios
+                    if "." in num_str:
+                        num = float(num_str)
+                        priority = i  # Decimal patterns get higher priority
+                    else:
+                        num = int(num_str)
+                        priority = i + 100  # Integer patterns get lower priority
+
                     if 0 < num < 100:
-                        return (num, 1)
+                        if best_match is None or priority < best_priority:
+                            best_match = (num, 1)
+                            best_priority = priority
                 except ValueError:
                     continue
 
         # Check medium-priority patterns
-        for pattern in self.medium_priority_patterns:
+        for i, pattern in enumerate(self.medium_priority_patterns):
             match = pattern.search(text)
             if match:
                 num_str, denom_str = match.groups()
                 try:
-                    num = int(num_str)
-                    denom = int(denom_str)
+                    # Handle both integer and decimal ratios
+                    if "." in num_str:
+                        num = float(num_str)
+                        priority = i + 200  # Decimal patterns get higher priority
+                    else:
+                        num = int(num_str)
+                        priority = i + 300  # Integer patterns get lower priority
+
+                    if "." in denom_str:
+                        denom = float(denom_str)
+                    else:
+                        denom = int(denom_str)
+
                     if 0 < num < 100 and 0 < denom < 100 and denom != 0:
-                        return (num, denom)
+                        if best_match is None or priority < best_priority:
+                            best_match = (num, denom)
+                            best_priority = priority
                 except ValueError:
                     continue
 
         # Check low-priority patterns last
-        for pattern in self.low_priority_patterns:
+        for i, pattern in enumerate(self.low_priority_patterns):
             match = pattern.search(text)
             if match:
                 num_str, denom_str = match.groups()
 
-                # Handle numeric numerator
+                # Handle numeric numerator (integer or decimal)
                 try:
-                    num = int(num_str)
+                    if "." in num_str:
+                        num = float(num_str)
+                        priority = i + 400  # Decimal patterns get higher priority
+                    else:
+                        num = int(num_str)
+                        priority = i + 500  # Integer patterns get lower priority
                 except ValueError:
                     num = self.number_words.get(num_str.lower())
+                    priority = i + 600  # Word patterns get lowest priority
 
-                # Handle denominator
+                # Handle denominator (integer or decimal)
                 try:
-                    denom = int(denom_str)
+                    if "." in denom_str:
+                        denom = float(denom_str)
+                    else:
+                        denom = int(denom_str)
                 except ValueError:
                     denom = self.number_words.get(denom_str.lower())
 
                 if num and denom and 0 < num < 100 and 0 < denom < 100 and denom != 0:
-                    return (num, denom)
+                    if best_match is None or priority < best_priority:
+                        best_match = (num, denom)
+                        best_priority = priority
 
-        return None
+        return best_match
 
     def _is_valid_split_context_fast(self, text: str) -> bool:
         """
         Fast context validation using pre-compiled patterns.
+        Only returns True for contexts that indicate EXECUTED stock splits.
 
         Args:
             text: Text to validate
 
         Returns:
-            True if valid split context
+            True if valid executed split context
         """
-        # Quick checks for common valid contexts
-        if any(pattern.search(text) for pattern in self.context_patterns):
+        text_lower = text.lower()
+
+        # Check for execution keywords (highest priority)
+        from .patterns import get_execution_keywords
+
+        execution_keywords = get_execution_keywords()
+        if any(keyword in text_lower for keyword in execution_keywords):
             return True
 
-        # Check for date patterns (indicates specific announcement)
-        if re.search(r"\d{1,2}/\d{1,2}/\d{4}|\w+\s+\d{1,2},\s+\d{4}", text):
-            return True
+        # Check for historical/proposed indicators (reject these)
+        from .patterns import get_historical_indicators
 
+        historical_indicators = get_historical_indicators()
+        if any(indicator in text_lower for indicator in historical_indicators):
+            return False
+
+        # Check for specific execution language patterns
+        execution_patterns = [
+            r"executed\s+a\s+",
+            r"effected\s+",
+            r"implemented\s+",
+            r"completed\s+",
+            r"carried\s+out\s+",
+            r"put\s+into\s+effect\s+",
+            r"made\s+effective\s+",
+            r"took\s+effect\s+",
+            r"became\s+effective\s+",
+            r"effective\s+date\s+",
+            r"record\s+date\s+",
+            r"ex-dividend\s+date\s+",
+            r"distribution\s+date\s+",
+        ]
+
+        for pattern in execution_patterns:
+            if re.search(pattern, text_lower):
+                return True
+
+        # Check for date patterns that indicate execution (not just mention)
+        execution_date_patterns = [
+            r"effective\s+\w+\s+\d{1,2},\s+\d{4}",  # "effective July 1, 2022"
+            r"record\s+date\s+of\s+\w+\s+\d{1,2},\s+\d{4}",  # "record date of July 1, 2022"
+            r"ex-dividend\s+date\s+\w+\s+\d{1,2},\s+\d{4}",  # "ex-dividend date July 1, 2022"
+            r"distribution\s+date\s+\w+\s+\d{1,2},\s+\d{4}",  # "distribution date July 1, 2022"
+        ]
+
+        for pattern in execution_date_patterns:
+            if re.search(pattern, text_lower):
+                return True
+
+        # Reject if it's just a mention without execution language
         return False
 
     def find_stock_splits(
@@ -529,59 +531,33 @@ class StockSplitDetector:
         self, filing_text: str, context_window: int
     ) -> Optional[float]:
         """Extract stock split ratio using numeric patterns."""
-        ratio_patterns = [
-            r"(\d+)[-–]for[-–](\d+)\s+(?:stock|share)?\s*split",
-            r"(\d+)\s*for\s*(\d+)\s+(?:stock|share)?\s*split",
-            r"(\d+)[-–]for[-–](\d+)",
-            r"(\d+)\s*for\s*(\d+)",
-            r"(\d+)\s*for\s*(\d+)\s+stock\s+split",
-            r"(\d+)\s*for\s*(\d+)\s+share\s+split",
-            r"(\d+)\s*for\s*(\d+)\s+split",
-            r"executed\s+a\s+(\d+)[-–]for[-–](\d+)\s+stock\s+split",
-            r"executed\s+a\s+(\d+)\s*for\s*(\d+)\s+stock\s+split",
-            r"(\d+)[-–]for[-–](\d+)\s+stock\s+split.*effected",
-            r"(\d+)\s*for\s*(\d+)\s+stock\s+split.*effected",
-            r"(\d+)[-–]for[-–](\d+)\s+split\s+of",
-            r"(\d+)\s*for\s*(\d+)\s+split\s+of",
-            r"(\d+)[-–]for[-–](\d+)\s+stock\s+split\s+effected",
-            r"(\d+)\s*for\s*(\d+)\s+stock\s+split\s+effected",
-            # Hybrid patterns for "X-for-one" format
-            r"(\d+)[-–]for[-–](\w+)\s+(?:stock|share)?\s*split",
-            r"(\d+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
-            r"(\d+)[-–]for[-–](\w+)",
-            r"(\d+)\s*for\s*(\w+)",
-            r"(\d+)\s*for\s*(\w+)\s+stock\s+split",
-            r"(\d+)\s*for\s*(\w+)\s+share\s+split",
-            r"(\d+)\s*for\s*(\w+)\s+split",
-            r"executed\s+a\s+(\d+)[-–]for[-–](\w+)\s+stock\s+split",
-            r"executed\s+a\s+(\d+)\s*for\s*(\w+)\s+stock\s+split",
-            r"(\d+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
-            r"(\d+)\s*for\s*(\w+)\s+stock\s+split.*effected",
-            r"(\d+)\s*for\s*one\s+stock\s+split",
-            r"(\d+)\s*for\s*one\s+share\s+split",
-            r"(\d+)\s*for\s*one\s+split",
-            r"(\d+)[-–]for[-–]one\s+stock\s+split",
-            r"(\d+)[-–]for[-–]one\s+share\s+split",
-            r"(\d+)[-–]for[-–]one\s+split",
-        ]
+        from .patterns import get_numeric_ratio_patterns
+
+        ratio_patterns = get_numeric_ratio_patterns()
 
         for pattern in ratio_patterns:
             for match in re.finditer(pattern, filing_text, re.IGNORECASE):
                 groups = match.groups()
                 num_str, denom_str = groups
 
-                # Handle first group
+                # Handle first group (integer or decimal)
                 try:
-                    num = int(num_str)
+                    if "." in num_str:
+                        num = float(num_str)
+                    else:
+                        num = int(num_str)
                 except ValueError:
                     if num_str.lower() == "one":
                         num = 1
                     else:
                         continue
 
-                # Handle second group
+                # Handle second group (integer or decimal)
                 try:
-                    denom = int(denom_str)
+                    if "." in denom_str:
+                        denom = float(denom_str)
+                    else:
+                        denom = int(denom_str)
                 except ValueError:
                     denom = self.number_words.get(denom_str.lower())
                     if not denom:
@@ -606,31 +582,9 @@ class StockSplitDetector:
         self, filing_text: str, context_window: int
     ) -> Optional[float]:
         """Extract stock split ratio using word-based patterns."""
-        word_patterns = [
-            r"(\w+)[-–]for[-–](\w+)\s+(?:stock|share)?\s*split",
-            r"(\w+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
-            r"(\w+)[-–]for[-–](\w+)",
-            r"(\w+)\s*for\s*(\w+)",
-            r"(\w+)\s*for\s*(\w+)\s+stock\s+split",
-            r"(\w+)\s*for\s*(\w+)\s+share\s+split",
-            r"(\w+)\s*for\s*(\w+)\s+split",
-            r"executed\s+a\s+(\w+)[-–]for[-–](\w+)\s+stock\s+split",
-            r"executed\s+a\s+(\w+)\s*for\s*(\w+)\s+stock\s+split",
-            r"(\w+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
-            r"(\w+)\s*for\s*(\w+)\s+stock\s+split.*effected",
-            r"twenty\s*for\s*one\s+stock\s+split",
-            r"twenty\s*for\s*one\s+share\s+split",
-            r"twenty\s*for\s*one\s+split",
-            r"twenty[-–]for[-–]one\s+stock\s+split",
-            r"twenty[-–]for[-–]one\s+share\s+split",
-            r"twenty[-–]for[-–]one\s+split",
-            r"(\w+)\s*for\s*one\s+stock\s+split",
-            r"(\w+)\s*for\s*one\s+share\s+split",
-            r"(\w+)\s*for\s*one\s+split",
-            r"(\w+)[-–]for[-–]one\s+stock\s+split",
-            r"(\w+)[-–]for[-–]one\s+share\s+split",
-            r"(\w+)[-–]for[-–]one\s+split",
-        ]
+        from .patterns import get_word_ratio_patterns
+
+        word_patterns = get_word_ratio_patterns()
 
         for pattern in word_patterns:
             for match in re.finditer(pattern, filing_text, re.IGNORECASE):
@@ -656,9 +610,13 @@ class StockSplitDetector:
 
     def _extract_split_date(self, filing_text: str, filing_date: str) -> str:
         """Extract the split announcement date from filing text."""
+        from .patterns import get_date_patterns
+
+        date_patterns = get_date_patterns()
+
         # Try Month DD, YYYY format
         date_match = re.search(
-            r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}",
+            date_patterns["month_day_year"],
             filing_text,
         )
         if date_match:
@@ -670,7 +628,7 @@ class StockSplitDetector:
                 pass
 
         # Try MM/DD/YYYY format
-        alt_date_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", filing_text)
+        alt_date_match = re.search(date_patterns["mm_dd_yyyy"], filing_text)
         if alt_date_match:
             try:
                 month, day, year = alt_date_match.groups()
@@ -686,13 +644,9 @@ class StockSplitDetector:
         context_lower = context.lower()
 
         # Check for execution/completion language
-        execution_keywords = [
-            "executed",
-            "effected",
-            "implemented",
-            "completed",
-            "carried out",
-        ]
+        from .patterns import get_execution_keywords
+
+        execution_keywords = get_execution_keywords()
         if any(word in context_lower for word in execution_keywords):
             return True
 
