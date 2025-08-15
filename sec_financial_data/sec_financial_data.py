@@ -89,6 +89,7 @@ def _get_cik_from_map(symbol, cik_map):
     # Manual overrides for companies with incorrect CIKs in SEC company tickers
     manual_overrides = {
         "BLK": "0001364742",  # Correct CIK for BlackRock, Inc.
+        "DLO": "0001846832",  # Correct CIK for DLocal.
     }
 
     # Check manual overrides first
@@ -2006,15 +2007,15 @@ class SECHelper:
         accession_numbers = filings.get("accessionNumber", [])
         forms = filings.get("form", [])
         filing_dates = filings.get("filingDate", [])
+
+        # Only include filing types that actually announce or report EXECUTED stock splits
         relevant_forms = {
-            "8-K",
-            "10-K",
-            "10-Q",
-            "DEF 14A",
-            "DEF 14C",
-            "424B3",
-            "424B4",
-            "424B5",
+            "8-K",  # Immediate announcements of executed splits
+            "10-K",  # Annual reports that may mention recent splits
+            "10-Q",  # Quarterly reports that may mention recent splits
+            # Removed DEF 14A, DEF 14C, 424B3, 424B4, 424B5 as they are unreliable
+            # DEF 14A/C are proxy statements that may mention historical or proposed splits, not executed ones
+            # 424B* are prospectus filings that are not reliable for split announcements
         }
         split_candidates = [
             (acc, form, date)
@@ -2022,70 +2023,14 @@ class SECHelper:
             if form in relevant_forms and date >= five_years_ago.strftime("%Y-%m-%d")
         ][:max_filings]
 
-        number_words = {
-            "one": 1,
-            "two": 2,
-            "three": 3,
-            "four": 4,
-            "five": 5,
-            "six": 6,
-            "seven": 7,
-            "eight": 8,
-            "nine": 9,
-            "ten": 10,
-            "eleven": 11,
-            "twelve": 12,
-            "thirteen": 13,
-            "fourteen": 14,
-            "fifteen": 15,
-            "sixteen": 16,
-            "seventeen": 17,
-            "eighteen": 18,
-            "nineteen": 19,
-            "twenty": 20,
-            "twenty-one": 21,
-            "twenty-two": 22,
-            "twenty-three": 23,
-            "twenty-four": 24,
-            "twenty-five": 25,
-            "twenty-six": 26,
-            "twenty-seven": 27,
-            "twenty-eight": 28,
-            "twenty-nine": 29,
-            "thirty": 30,
-            "thirty-one": 31,
-            "thirty-two": 32,
-            "thirty-three": 33,
-            "thirty-four": 34,
-            "thirty-five": 35,
-            "thirty-six": 36,
-            "thirty-seven": 37,
-            "thirty-eight": 38,
-            "thirty-nine": 39,
-            "forty": 40,
-            "fifty": 50,
-            "sixty": 60,
-            "seventy": 70,
-            "eighty": 80,
-            "ninety": 90,
-            "hundred": 100,
-        }
+        from .patterns import NUMBER_WORDS
+
+        number_words = NUMBER_WORDS
 
         # Strong announcement keywords
-        announcement_keywords = [
-            "declared",
-            "approved",
-            "announced",
-            "board of directors",
-            "executed",
-            "effected",
-            "implemented",
-            "completed",
-            "authorized",
-            "resolved",
-            "determined",
-            "decided",
-        ]
+        from .patterns import get_announcement_keywords
+
+        announcement_keywords = get_announcement_keywords()
 
         def is_announcement_context(context):
             context_lower = context.lower()
@@ -2095,53 +2040,47 @@ class SECHelper:
             """
             Additional validation for split context to catch more cases.
             This helps with announcements that might not use traditional announcement keywords.
+            Only returns True for contexts that indicate EXECUTED stock splits.
             """
             context_lower = context.lower()
 
-            # Check for execution/completion language
-            execution_keywords = [
-                "executed",
-                "effected",
-                "implemented",
-                "completed",
-                "carried out",
-            ]
+            # Check for execution/completion language (highest priority)
+            from .patterns import get_execution_keywords
+
+            execution_keywords = get_execution_keywords()
             if any(word in context_lower for word in execution_keywords):
                 return True
+
+            # Check for historical/proposed indicators (reject these)
+            from .patterns import get_historical_indicators
+
+            historical_indicators = get_historical_indicators()
+            if any(indicator in context_lower for indicator in historical_indicators):
+                return False
 
             # Check for dividend-related language (stock splits are often effected as dividends)
             dividend_keywords = ["dividend", "special dividend", "stock dividend"]
             if any(word in context_lower for word in dividend_keywords):
                 return True
 
-            # Check for date-specific language (often indicates execution)
-            date_patterns = [
-                r"on\s+\w+\s+\d{1,2},\s+\d{4}",  # "on July 15, 2022"
+            # Check for specific execution date patterns (not just any date mention)
+            execution_date_patterns = [
                 r"effective\s+\w+\s+\d{1,2},\s+\d{4}",  # "effective July 1, 2022"
                 r"record\s+date\s+of\s+\w+\s+\d{1,2},\s+\d{4}",  # "record date of July 1, 2022"
+                r"ex-dividend\s+date\s+\w+\s+\d{1,2},\s+\d{4}",  # "ex-dividend date July 1, 2022"
+                r"distribution\s+date\s+\w+\s+\d{1,2},\s+\d{4}",  # "distribution date July 1, 2022"
             ]
-            for pattern in date_patterns:
+            for pattern in execution_date_patterns:
                 if re.search(pattern, context_lower):
                     return True
 
+            # Reject if it's just a mention without execution language
             return False
 
-        # Filing type priority (lower number = higher priority)
-        # 8-K: Highest priority - used for immediate announcements of significant events
-        # DEF 14A: High priority - proxy statements often contain board decisions
-        # 10-Q: Medium priority - quarterly reports may mention recent splits
-        # 10-K: Lower priority - annual reports may mention splits but are less timely
-        # 424B*: Lower priority - prospectus filings, less common for splits
-        form_priority = {
-            "8-K": 1,  # Highest priority - immediate announcements
-            "10-Q": 2,  # High priority - quarterly reports
-            "10-K": 3,  # Medium priority - annual reports
-            "DEF 14A": 4,  # Lower priority - proxy statements
-            "DEF 14C": 4,  # Lower priority - proxy statements
-            "424B3": 5,  # Lower priority - prospectus filings
-            "424B4": 5,  # Lower priority - prospectus filings
-            "424B5": 5,  # Lower priority - prospectus filings
-        }
+        # Use the stock splits module for adjustment
+        from .patterns import FORM_PRIORITY
+
+        form_priority = FORM_PRIORITY
 
         def process_filing(args):
             acc, form, date = args
@@ -2157,60 +2096,9 @@ class SECHelper:
                 ratio = None
                 context_window = 60  # Increased context window for better detection
                 found_context = None
-                ratio_patterns = [
-                    r"(\d+)[-–]for[-–](\d+)\s+(?:stock|share)?\s*split",
-                    r"(\d+)\s*for\s*(\d+)\s+(?:stock|share)?\s*split",
-                    r"(\d+)[-–]for[-–](\d+)",
-                    r"(\d+)\s*for\s*(\d+)",
-                    # Additional patterns for better coverage
-                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split",
-                    r"(\d+)\s*for\s*(\d+)\s+share\s+split",
-                    r"(\d+)\s*for\s*(\d+)\s+split",
-                    # Pattern for "executed a X-for-Y stock split" format
-                    r"executed\s+a\s+(\d+)[-–]for[-–](\d+)\s+stock\s+split",
-                    r"executed\s+a\s+(\d+)\s*for\s*(\d+)\s+stock\s+split",
-                    # Pattern for "effected in the form of" format
-                    r"(\d+)[-–]for[-–](\d+)\s+stock\s+split.*effected",
-                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split.*effected",
-                    # Pattern for "X-for-Y split of" format
-                    r"(\d+)[-–]for[-–](\d+)\s+split\s+of",
-                    r"(\d+)\s*for\s*(\d+)\s+split\s+of",
-                    # Pattern for "X-for-Y stock split effected" format
-                    r"(\d+)[-–]for[-–](\d+)\s+stock\s+split\s+effected",
-                    r"(\d+)\s*for\s*(\d+)\s+stock\s+split\s+effected",
-                    # Hybrid patterns for "X-for-one" format (where X is numeric, "one" is word)
-                    r"(\d+)[-–]for[-–](\w+)\s+(?:stock|share)?\s*split",
-                    r"(\d+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
-                    r"(\d+)[-–]for[-–](\w+)",
-                    r"(\d+)\s*for\s*(\w+)",
-                    r"(\d+)\s*for\s*(\w+)\s+stock\s+split",
-                    r"(\d+)\s*for\s*(\w+)\s+share\s+split",
-                    r"(\d+)\s*for\s*(\w+)\s+split",
-                    # Pattern for "executed a X-for-one stock split" format
-                    r"executed\s+a\s+(\d+)[-–]for[-–](\w+)\s+stock\s+split",
-                    r"executed\s+a\s+(\d+)\s*for\s*(\w+)\s+stock\s+split",
-                    # Pattern for "effected in the form of" format with hybrid
-                    r"(\d+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
-                    r"(\d+)\s*for\s*(\w+)\s+stock\s+split.*effected",
-                    # Additional specific patterns for common formats
-                    r"(\d+)\s*for\s*one\s+stock\s+split",
-                    r"(\d+)\s*for\s*one\s+share\s+split",
-                    r"(\d+)\s*for\s*one\s+split",
-                    r"(\d+)[-–]for[-–]one\s+stock\s+split",
-                    r"(\d+)[-–]for[-–]one\s+share\s+split",
-                    r"(\d+)[-–]for[-–]one\s+split",
-                    # Patterns for reverse splits (one-for-X format)
-                    r"one\s*for\s*(\d+)\s+stock\s+split",
-                    r"one\s*for\s*(\d+)\s+share\s+split",
-                    r"one\s*for\s*(\d+)\s+split",
-                    r"one[-–]for[-–](\d+)\s+stock\s+split",
-                    r"one[-–]for[-–](\d+)\s+share\s+split",
-                    r"one[-–]for[-–](\d+)\s+split",
-                    # Patterns for special dividend language
-                    r"(\d+)\s*for\s*(\w+)\s+special\s+dividend",
-                    r"(\d+)\s*for\s*(\w+)\s+stock\s+dividend",
-                    r"(\d+)\s*for\s*(\w+)\s+share\s+dividend",
-                ]
+                from .patterns import get_numeric_ratio_patterns
+
+                ratio_patterns = get_numeric_ratio_patterns()
                 for pat in ratio_patterns:
                     for match in re.finditer(pat, filing_text, re.IGNORECASE):
                         groups = match.groups()
@@ -2266,36 +2154,9 @@ class SECHelper:
                         break
 
                 # Word-based ratio patterns (e.g., 'six-for-one split')
-                word_ratio_patterns = [
-                    r"(\w+)[-–]for[-–](\w+)\s+(?:stock|share)?\s*split",
-                    r"(\w+)\s*for\s*(\w+)\s+(?:stock|share)?\s*split",
-                    r"(\w+)[-–]for[-–](\w+)",
-                    r"(\w+)\s*for\s*(\w+)",
-                    # Additional patterns for better coverage
-                    r"(\w+)\s*for\s*(\w+)\s+stock\s+split",
-                    r"(\w+)\s*for\s*(\w+)\s+share\s+split",
-                    r"(\w+)\s*for\s*(\w+)\s+split",
-                    # Pattern for "executed a X-for-Y stock split" format
-                    r"executed\s+a\s+(\w+)[-–]for[-–](\w+)\s+stock\s+split",
-                    r"executed\s+a\s+(\w+)\s*for\s*(\w+)\s+stock\s+split",
-                    # Pattern for "effected in the form of" format
-                    r"(\w+)[-–]for[-–](\w+)\s+stock\s+split.*effected",
-                    r"(\w+)\s*for\s*(\w+)\s+stock\s+split.*effected",
-                    # Additional word-based patterns for common formats
-                    r"twenty\s*for\s*one\s+stock\s+split",
-                    r"twenty\s*for\s*one\s+share\s+split",
-                    r"twenty\s*for\s*one\s+split",
-                    r"twenty[-–]for[-–]one\s+stock\s+split",
-                    r"twenty[-–]for[-–]one\s+share\s+split",
-                    r"twenty[-–]for[-–]one\s+split",
-                    # Patterns for other common ratios
-                    r"(\w+)\s*for\s*one\s+stock\s+split",
-                    r"(\w+)\s*for\s*one\s+share\s+split",
-                    r"(\w+)\s*for\s*one\s+split",
-                    r"(\w+)[-–]for[-–]one\s+stock\s+split",
-                    r"(\w+)[-–]for[-–]one\s+share\s+split",
-                    r"(\w+)[-–]for[-–]one\s+split",
-                ]
+                from .patterns import get_word_ratio_patterns
+
+                word_ratio_patterns = get_word_ratio_patterns()
                 for pat in word_ratio_patterns:
                     for match in re.finditer(pat, filing_text, re.IGNORECASE):
                         num_word, denom_word = match.groups()
@@ -2326,8 +2187,11 @@ class SECHelper:
                         break
 
                 # Try to extract date (look for Month DD, YYYY or MM/DD/YYYY)
+                from .patterns import get_date_patterns
+
+                date_patterns = get_date_patterns()
                 date_match = re.search(
-                    r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}",
+                    date_patterns["month_day_year"],
                     filing_text,
                 )
                 if date_match:
@@ -2339,9 +2203,7 @@ class SECHelper:
                         split_date = date
                 else:
                     # Try alternative date formats
-                    alt_date_match = re.search(
-                        r"(\d{1,2})/(\d{1,2})/(\d{4})", filing_text
-                    )
+                    alt_date_match = re.search(date_patterns["mm_dd_yyyy"], filing_text)
                     if alt_date_match:
                         try:
                             month, day, year = alt_date_match.groups()
@@ -2462,9 +2324,27 @@ class SECHelper:
             )
             return self._latest_split_cache[symbol_or_cik]
 
-        logger.info(f"[DEBUG] {symbol_or_cik} not in cache, calling find_stock_splits")
-        split = self.find_stock_splits(symbol_or_cik)
-        logger.info(f"[DEBUG] find_stock_splits returned: {split}")
+        logger.info(f"[DEBUG] {symbol_or_cik} not in cache, calling StockSplitDetector")
+
+        try:
+            # Use the StockSplitDetector class for better decimal ratio support
+            from .stock_splits import StockSplitDetector
+
+            detector = StockSplitDetector(self.headers)
+            split = detector.find_stock_splits(symbol_or_cik)
+            logger.info(f"[DEBUG] StockSplitDetector returned: {split}")
+        except ImportError:
+            logger.warning(
+                "[DEBUG] StockSplitDetector not available, falling back to legacy method"
+            )
+            split = self.find_stock_splits(symbol_or_cik)
+            logger.info(f"[DEBUG] Legacy find_stock_splits returned: {split}")
+        except Exception as e:
+            logger.error(
+                f"[DEBUG] Error using StockSplitDetector: {e}, falling back to legacy method"
+            )
+            split = self.find_stock_splits(symbol_or_cik)
+            logger.info(f"[DEBUG] Legacy find_stock_splits returned: {split}")
 
         self._latest_split_cache[symbol_or_cik] = split
         return split
