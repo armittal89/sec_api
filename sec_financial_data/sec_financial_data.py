@@ -371,6 +371,7 @@ def _get_financial_statement_data(
             "AccountsPayableCurrent",
             "AccountsReceivableNetCurrent",
             "AccountsReceivableTradeCurrent",
+            "AccountsReceivableNet",  # Alternative tag used by LEN
             "AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment",
             "AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipmentPeriodIncreaseDecrease",
             "AccumulatedDepreciationDepletionAndAmortizationSaleOfPropertyPlantAndEquipment1",
@@ -384,6 +385,7 @@ def _get_financial_statement_data(
             "CapitalLeaseObligationsNoncurrent",
             "CashAndCashEquivalents",
             "CashAndCashEquivalentsAtCarryingValue",
+            "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",  # Alternative tag used by LEN in recent years
             "CommercialPaper",
             "CommonStock",
             "CommonStockValue",
@@ -404,13 +406,18 @@ def _get_financial_statement_data(
             "Goodwill",
             "IncomeTaxesPayable",
             "IncreaseDecreaseInDeferredRevenue",
+            "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",  # Alternative tag used by LEN in recent years
             "IntangibleAssets",
             "IntangibleAssetsNetExcludingGoodwill",
             "Inventory",
             "InventoryNet",
+            "InventoryOperativeBuilders",  # Alternative tag used by LEN
+            "InventoryAdjustments",  # Alternative tag used by LEN in recent years
+            "AccountsAndNotesReceivableNet",  # Alternative tag used by LEN in recent years
             "Liabilities",
             "LiabilitiesCurrent",
             "LiabilitiesNoncurrent",
+            "LongTermDebt",  # Alternative tag used by LEN
             "LongTermDebtCurrent",
             "LongTermDebtCurrentMaturities",
             "LongTermDebtCurrentMaturitiesAndOtherShortTermDebt",
@@ -710,10 +717,6 @@ def _get_financial_statement_data(
         most_common_count = most_common[1]
         total_reports = len(ten_k_month_days)
 
-        print(f"[DEBUG] 10-K endDates for {symbol_or_cik}: {ten_k_end_dates}")
-        print(f"[DEBUG] Detected fiscal year-end month-day: {fiscal_year_end_md}")
-        print(f"[DEBUG] Month-day counts: {dict(month_day_counts)}")
-
         # Check if there are recent reports with different month-day patterns
         # Sort reports by date to identify recent patterns
         ten_k_reports_sorted = sorted(
@@ -743,18 +746,11 @@ def _get_financial_statement_data(
         pattern_consistency_ratio = most_common_count / total_reports
         unique_patterns = len(month_day_counts)
 
-        print(
-            f"[DEBUG] Pattern consistency: {pattern_consistency_ratio:.2f} ({most_common_count}/{total_reports})"
-        )
-        print(f"[DEBUG] Unique patterns: {unique_patterns}")
-
         # Don't filter if:
         # 1. Most common pattern represents less than 30% of reports, OR
         # 2. There are more than 8 unique patterns (indicating inconsistency)
         if pattern_consistency_ratio < 0.3 or unique_patterns > 8:
-            print(
-                f"[DEBUG] Fiscal year-end pattern too inconsistent, not filtering by month-day"
-            )
+
             fiscal_year_end_md = None
 
     # Filter 10-Ks to only those matching fiscal year-end (if pattern is consistent)
@@ -762,13 +758,6 @@ def _get_financial_statement_data(
         ten_k_reports = [
             r for r in ten_k_reports if r["endDate"][5:] == fiscal_year_end_md
         ]
-        print(
-            f"[DEBUG] Filtered to {len(ten_k_reports)} reports matching {fiscal_year_end_md}"
-        )
-    else:
-        print(
-            f"[DEBUG] No fiscal year-end filtering applied, keeping all {len(ten_k_reports)} reports"
-        )
 
     # Step 5: Select reports based on report_type and apply limit
     selected_reports = []
@@ -848,10 +837,7 @@ def _get_financial_statement_data(
             if len(reports) > 1:
                 # Sort by end date (descending), then by filing date (descending)
                 reports.sort(key=lambda r: (r["endDate"], r["filedAt"]), reverse=True)
-                print(
-                    f"[DEBUG] Multiple 10-K reports for fiscal year {fiscal_year}: {[r['endDate'] for r in reports]}"
-                )
-                print(f"[DEBUG] Keeping report with end date: {reports[0]['endDate']}")
+
             final_deduped_reports.append(reports[0])
 
         # Add any non-10-K reports (shouldn't happen with report_type="10-K", but just in case)
@@ -1139,6 +1125,7 @@ def _get_financial_statement_data(
                 "bottomLineNetIncome": netIncome,
             }
         elif statement_type == "balance_sheet":
+
             # ASSETS
             # Current Assets
             cashAndCashEquivalents = get_val(
@@ -1146,9 +1133,11 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "CashAndCashEquivalents",
                     "Cash",
-                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                    "CashAndCashEquivalentsAtCarryingValue",
+                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",  # Alternative tag used by LEN in recent years
                 ],
             )
+
             shortTermInvestments = get_val(
                 "MarketableSecuritiesCurrent",
                 alternate_tags=[
@@ -1157,6 +1146,7 @@ def _get_financial_statement_data(
                     "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost",
                 ],
             )
+
             cashAndShortTermInvestments = cashAndCashEquivalents + shortTermInvestments
 
             netReceivables = get_val(
@@ -1164,8 +1154,11 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "ReceivablesNetCurrent",
                     "AccountsReceivableGrossCurrent",
+                    "AccountsReceivableNet",  # Alternative tag used by LEN
+                    "AccountsAndNotesReceivableNet",  # Alternative tag used by LEN in recent years
                 ],
             )
+
             accountsReceivables = get_val(
                 "AccountsReceivableTradeCurrent",
                 alternate_tags=["AccountsReceivableGrossCurrent"],
@@ -1184,8 +1177,11 @@ def _get_financial_statement_data(
                     "InventoryFinishedGoods",
                     "InventoryRawMaterials",
                     "InventoryWorkInProcess",
+                    "InventoryOperativeBuilders",  # Alternative tag used by LEN
+                    "InventoryAdjustments",  # Alternative tag used by LEN in recent years
                 ],
             )
+
             prepaids = get_val(
                 "PrepaidExpenseCurrent",
                 alternate_tags=["PrepaidExpenseAndOtherAssetsCurrent"],
@@ -1290,7 +1286,10 @@ def _get_financial_statement_data(
             # Current Liabilities
             accountPayables = get_val(
                 "AccountsPayableCurrent",
-                alternate_tags=["IncreaseDecreaseInAccountsPayable"],
+                alternate_tags=[
+                    "IncreaseDecreaseInAccountsPayable",
+                    "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",  # Alternative tag used by LEN in recent years
+                ],
             )
             otherPayables = get_val("OtherAccountsPayableCurrent")
             totalPayables = accountPayables + otherPayables

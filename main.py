@@ -25,25 +25,53 @@ def main():
         print(f"Could not find CIK for {symbol}")
         return  # Exit if CIK not found
 
-    # --- Income Statement 10-K Only ---
-    print(f"\n--- Getting Income Statement for {symbol} (10-K, limit 5) ---")
-    income_statement_10k = helper.get_income_statement(
-        symbol, limit=10, report_type="10-K"
-    )
-    if income_statement_10k:
-        print(f"Found {len(income_statement_10k)} 10-K reports.")
-        print(json.dumps(income_statement_10k, indent=2))
-    else:
-        print(f"No 10-K income statement data found for {symbol}")
-
     # --- Balance Sheet 10-K Only ---
     print(f"\n--- Getting Balance Sheet for {symbol} (10-K, limit 5) ---")
     balance_sheet_10k = helper.get_balance_sheet(symbol, limit=10, report_type="10-K")
     if balance_sheet_10k:
         print(f"Found {len(balance_sheet_10k)} 10-K reports.")
-        print(json.dumps(balance_sheet_10k, indent=2))
+        print("Balance Sheet Data:")
+        for i, report in enumerate(balance_sheet_10k):
+            print(f"\nReport {i+1}:")
+            print(f"  Fiscal Year: {report.get('fiscalYear')}")
+            print(f"  End Date: {report.get('endDate')}")
+            print(f"  Total Assets: {report.get('totalAssets', 'NOT FOUND')}")
+            print(f"  Total Liabilities: {report.get('totalLiabilities', 'NOT FOUND')}")
+            print(
+                f"  Total Current Assets: {report.get('totalCurrentAssets', 'NOT FOUND')}"
+            )
+            print(
+                f"  Total Current Liabilities: {report.get('totalCurrentLiabilities', 'NOT FOUND')}"
+            )
+            print(
+                f"  Cash and Cash Equivalents: {report.get('cashAndCashEquivalents', 'NOT FOUND')}"
+            )
+            print(f"  Inventory: {report.get('inventory', 'NOT FOUND')}")
+            print(f"  Net Receivables: {report.get('netReceivables', 'NOT FOUND')}")
+            print(f"  Account Payables: {report.get('accountPayables', 'NOT FOUND')}")
     else:
         print(f"No 10-K balance sheet data found for {symbol}")
+
+    # --- Balance Sheet 10-Q Only ---
+    print(f"\n--- Getting Balance Sheet for {symbol} (10-Q, limit 1) ---")
+    balance_sheet_10q = helper.get_balance_sheet(symbol, limit=1, report_type="10-Q")
+    if balance_sheet_10q:
+        print(f"Found {len(balance_sheet_10q)} 10-Q reports.")
+        print("Balance Sheet Data:")
+        for i, report in enumerate(balance_sheet_10q):
+            print(f"\nReport {i+1}:")
+            print(f"  Fiscal Year: {report.get('fiscalYear')}")
+            print(f"  End Date: {report.get('endDate')}")
+            print(f"  Total Assets: {report.get('totalAssets', 'NOT FOUND')}")
+            print(f"  Total Liabilities: {report.get('totalLiabilities', 'NOT FOUND')}")
+            print(
+                f"  Total Current Assets: {report.get('totalCurrentAssets', 'NOT FOUND')}"
+            )
+            print(
+                f"  Total Current Liabilities: {report.get('totalCurrentLiabilities', 'NOT FOUND')}"
+            )
+    else:
+        print(f"No 10-Q balance sheet data found for {symbol}")
 
     # --- Cash Flow Statement 10-K Only ---
     print(f"\n--- Getting Cash Flow Statement for {symbol} (10-K, limit 5) ---")
@@ -64,15 +92,6 @@ def main():
         print(json.dumps(income_statement_10q, indent=2))
     else:
         print(f"No 10-Q income statement data found for {symbol}")
-
-    # --- Balance Sheet 10-Q Only ---
-    print(f"\n--- Getting Balance Sheet for {symbol} (10-Q, limit 1) ---")
-    balance_sheet_10q = helper.get_balance_sheet(symbol, limit=1, report_type="10-Q")
-    if balance_sheet_10q:
-        print(f"Found {len(balance_sheet_10q)} 10-Q reports.")
-        print(json.dumps(balance_sheet_10q, indent=2))
-    else:
-        print(f"No 10-Q balance sheet data found for {symbol}")
 
     # --- Cash Flow Statement 10-Q Only ---
     print(f"\n--- Getting Cash Flow Statement for {symbol} (10-Q, limit 1) ---")
@@ -146,22 +165,6 @@ def main():
             )
     else:
         print(f"No aggregated Assets data found for Q1 {year_for_frames}.")
-
-    # --- DEBUG: Print all available XBRL tags for 2024 ---
-    print(f"\n--- DEBUG: All available XBRL tags for {symbol} (2024) ---")
-    all_facts = helper.get_company_all_facts(symbol)
-    if all_facts and "facts" in all_facts and "us-gaap" in all_facts["facts"]:
-        us_gaap = all_facts["facts"]["us-gaap"]
-        for tag, tag_data in us_gaap.items():
-            if "units" in tag_data:
-                for unit, facts in tag_data["units"].items():
-                    for fact in facts:
-                        if fact.get("fy") == 2024:
-                            print(
-                                f"Tag: {tag}, Unit: {unit}, Value: {fact.get('val')}, Form: {fact.get('form')}, End: {fact.get('end')}"
-                            )
-    else:
-        print("No us-gaap facts found.")
 
 
 if __name__ == "__main__":
