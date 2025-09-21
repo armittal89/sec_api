@@ -29,6 +29,261 @@ if not logger.hasHandlers():
 logger.setLevel(logging.INFO)
 
 
+# =============================================================================
+# TAG MAPPINGS - Centralized tag definitions for US GAAP and IFRS
+# =============================================================================
+
+# Tag mappings with primary (US GAAP) and alternate (IFRS) tags
+# Format: {output_field: [primary_tag, *alternate_tags]}
+TAG_MAPPINGS = {
+    # Revenue tags
+    "revenue": [
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+        "SalesRevenueGoodsNet",
+        "SalesRevenueServicesNet",
+        "Revenue",  # IFRS
+        "RevenueFromContractsWithCustomers",  # IFRS
+        "RevenueFromSaleOfGoods",  # IFRS
+        "RevenueFromRenderingOfServices",  # IFRS
+    ],
+    "costOfRevenue": [
+        "CostOfRevenue",
+        "CostOfGoodsAndServicesSold",
+        "CostOfSales",  # IFRS
+        "CostOfMerchandiseSold",  # IFRS
+    ],
+    # Net Income tags
+    "netIncome": [
+        "NetIncomeLoss",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
+        "ProfitLoss",  # IFRS
+        "ProfitLossAttributableToOwnersOfParent",  # IFRS
+    ],
+    # Operating Income tags
+    "operatingIncome": [
+        "OperatingIncomeLoss",
+        "ProfitLossFromOperatingActivities",  # IFRS
+        "OperatingProfitLoss",  # IFRS
+    ],
+    # Income Before Tax tags
+    "incomeBeforeTax": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTax",
+        "IncomeBeforeIncomeTax",
+        "IncomeBeforeTax",
+        "ProfitLossBeforeTax",  # IFRS
+    ],
+    # Income Tax tags
+    "incomeTax": [
+        "IncomeTaxExpenseBenefit",
+        "IncomeTaxExpenseContinuingOperations",  # IFRS
+        "AdjustmentsForIncomeTaxExpense",  # IFRS
+    ],
+    # EPS tags
+    "eps": [
+        "EarningsPerShareBasic",
+        "BasicEarningsLossPerShare",  # IFRS
+        "EarningsPerShare",  # IFRS
+    ],
+    "epsDiluted": [
+        "EarningsPerShareDiluted",
+        "DilutedEarningsLossPerShare",  # IFRS
+    ],
+    # Shares Outstanding tags
+    "sharesOutstanding": [
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+        "WeightedAverageShares",  # IFRS
+        "AdjustedWeightedAverageShares",  # IFRS
+    ],
+    "sharesOutstandingDiluted": [
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+        "AdjustedWeightedAverageShares",  # IFRS
+    ],
+    # Depreciation tags
+    "depreciation": [
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAndAmortisationExpense",  # IFRS
+        "AdjustmentsForDepreciationExpense",  # IFRS
+    ],
+    # Interest tags
+    "interestIncome": [
+        "InterestIncome",
+        "FinanceIncome",  # IFRS
+        "AdjustmentsForFinanceIncome",  # IFRS
+    ],
+    "interestExpense": [
+        "InterestExpense",
+        "FinanceCosts",  # IFRS
+        "AdjustmentsForFinanceCosts",  # IFRS
+    ],
+    # Cash tags
+    "cash": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashAndCashEquivalents",  # IFRS
+        "Cash",  # IFRS
+        "CashEquivalents",  # IFRS
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    ],
+    # Assets tags
+    "totalAssets": [
+        "Assets",
+        "TotalAssets",
+    ],
+    "currentAssets": [
+        "AssetsCurrent",
+        "CurrentAssets",  # IFRS
+    ],
+    "nonCurrentAssets": [
+        "AssetsNoncurrent",
+        "NoncurrentAssets",  # IFRS
+    ],
+    # Liabilities tags
+    "totalLiabilities": [
+        "Liabilities",
+        "TotalLiabilities",
+    ],
+    "currentLiabilities": [
+        "LiabilitiesCurrent",
+        "CurrentLiabilities",  # IFRS
+    ],
+    "nonCurrentLiabilities": [
+        "LiabilitiesNoncurrent",
+        "NoncurrentLiabilities",  # IFRS
+    ],
+    # Equity tags
+    "equity": [
+        "StockholdersEquity",
+        "TotalStockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+        "Equity",  # IFRS
+        "EquityAttributableToOwnersOfParent",  # IFRS
+    ],
+    # Cash Flow tags
+    "operatingCashFlow": [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "OperatingCashFlow",
+        "NetOperatingCashFlow",
+        "CashFlowsFromUsedInOperatingActivities",  # IFRS
+        "CashFlowsFromUsedInOperations",  # IFRS
+    ],
+    "investingCashFlow": [
+        "NetCashProvidedByUsedInInvestingActivities",
+        "CashFlowsFromUsedInInvestingActivities",  # IFRS
+    ],
+    "financingCashFlow": [
+        "NetCashProvidedByUsedInFinancingActivities",
+        "CashFlowsFromUsedInFinancingActivities",  # IFRS
+    ],
+    "capex": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PurchaseOfPropertyPlantAndEquipment",  # IFRS
+    ],
+}
+
+# Key items for data completeness checking by statement type
+KEY_ITEMS = {
+    "income_statement": {
+        "us_gaap": [
+            "Revenues",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "OperatingIncomeLoss",
+            "NetIncomeLoss",
+            "CostOfRevenue",
+            "GrossProfit",
+        ],
+        "ifrs": [
+            "Revenue",
+            "RevenueFromContractsWithCustomers",
+            "ProfitLossFromOperatingActivities",
+            "ProfitLoss",
+            "CostOfSales",
+            "GrossProfit",
+        ],
+    },
+    "balance_sheet": {
+        "us_gaap": [
+            "CashAndCashEquivalentsAtCarryingValue",
+            "AssetsCurrent",
+            "Assets",
+            "LiabilitiesCurrent",
+            "StockholdersEquity",
+        ],
+        "ifrs": [
+            "CashAndCashEquivalents",
+            "CurrentAssets",
+            "Assets",
+            "CurrentLiabilities",
+            "Equity",
+        ],
+    },
+    "cash_flow": {
+        "us_gaap": [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "OperatingCashFlow",
+            "NetOperatingCashFlow",
+            "NetIncomeLoss",
+            "DepreciationDepletionAndAmortization",
+        ],
+        "ifrs": [
+            "CashFlowsFromUsedInOperatingActivities",
+            "CashFlowsFromUsedInOperations",
+            "ProfitLoss",
+            "AdjustmentsForDepreciationExpense",
+            "AdjustmentsForAmortisationExpense",
+        ],
+    },
+}
+
+
+def _get_value_from_tags(data_dict: Dict[str, Any], tags: List[str], default: Any = 0) -> Any:
+    """
+    Retrieves a financial value by trying multiple tags in order.
+
+    This helper function attempts to find a non-None, non-zero value from a list of tags.
+    It tries each tag in order until it finds a valid value.
+
+    Args:
+        data_dict: Dictionary containing financial data with XBRL tags as keys.
+        tags: List of tags to try in order of preference.
+        default: Value to return if no tag yields a valid value. Defaults to 0.
+
+    Returns:
+        The first non-zero value found, or the default value.
+    """
+    for tag in tags:
+        if tag in data_dict:
+            val = data_dict.get(tag)
+            if val is not None and val != 0:
+                return val
+    return default
+
+
+def _get_first_available_value(data_dict: Dict[str, Any], tags: List[str], default: Any = 0) -> Any:
+    """
+    Retrieves the first available value from tags (allows zero values).
+
+    Similar to _get_value_from_tags but returns the first non-None value,
+    even if it's zero.
+
+    Args:
+        data_dict: Dictionary containing financial data with XBRL tags as keys.
+        tags: List of tags to try in order of preference.
+        default: Value to return if no tag yields a valid value. Defaults to 0.
+
+    Returns:
+        The first non-None value found, or the default value.
+    """
+    for tag in tags:
+        if tag in data_dict:
+            val = data_dict.get(tag)
+            if val is not None:
+                return val
+    return default
+
+
 def _rate_limit():
     """
     Ensures that API requests respect SEC's rate limits (max 10 requests per second).
@@ -302,7 +557,7 @@ def _get_financial_statement_data(
     # This is a simplified list; real financial statements have many more tags.
     # Users can extend this list based on their needs by exploring
     # company_facts data.
-    statement_tags = {
+    statement_tags_us_gaap = {
         "income_statement": [
             "BusinessAcquisitionsProFormaRevenue",
             "BusinessCombinationProFormaInformationRevenueOfAcquireeSinceAcquisitionDateActual",
@@ -338,6 +593,8 @@ def _get_financial_statement_data(
             "InterestRevenueExpenseNet",
             "MarketDataRevenue",
             "NetIncomeLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic",
+            "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
             "NetIncomeLossFromDiscontinuedOperationsNetOfTax",
             "NonoperatingIncomeLoss",
             "OperatingExpenses",
@@ -499,21 +756,225 @@ def _get_financial_statement_data(
         ],
     }
 
-    if statement_type not in statement_tags:
+    # Define IFRS tags for each statement type (for foreign filers using IFRS)
+    # IFRS uses different taxonomy (ifrs-full) with different tag names
+    statement_tags_ifrs = {
+        "income_statement": [
+            # Revenue tags
+            "Revenue",
+            "RevenueFromContractsWithCustomers",
+            "RevenueFromSaleOfGoods",
+            "RevenueFromRenderingOfServices",
+            "RevenueFromInterest",
+            "RevenueFromDividends",
+            "RevenueFromRoyalties",
+            "OtherRevenue",
+            # Cost of sales / Cost of revenue
+            "CostOfSales",
+            "CostOfMerchandiseSold",
+            # Gross profit
+            "GrossProfit",
+            # Operating expenses
+            "SellingExpense",
+            "AdministrativeExpense",
+            "SellingGeneralAndAdministrativeExpense",
+            "ResearchAndDevelopmentExpense",
+            "OtherExpenseByFunction",
+            "DistributionCosts",
+            # Depreciation and amortization
+            "DepreciationAndAmortisationExpense",
+            "DepreciationExpense",
+            "AmortisationExpense",
+            "AdjustmentsForDepreciationExpense",
+            "AdjustmentsForAmortisationExpense",
+            # Operating profit/income
+            "ProfitLossFromOperatingActivities",
+            "OperatingProfitLoss",
+            # Finance income/costs
+            "FinanceIncome",
+            "FinanceCosts",
+            "AdjustmentsForFinanceIncome",
+            "AdjustmentsForFinanceCosts",
+            "InterestExpense",
+            "InterestIncome",
+            "NetFinanceIncome",
+            # Pre-tax income
+            "ProfitLossBeforeTax",
+            # Tax
+            "IncomeTaxExpenseContinuingOperations",
+            "CurrentTaxExpenseIncome",
+            "DeferredTaxExpenseIncome",
+            "AdjustmentsForIncomeTaxExpense",
+            # Net income
+            "ProfitLoss",
+            "ProfitLossAttributableToOwnersOfParent",
+            "ProfitLossAttributableToNoncontrollingInterests",
+            "ComprehensiveIncome",
+            "OtherComprehensiveIncome",
+            # EPS
+            "BasicEarningsLossPerShare",
+            "DilutedEarningsLossPerShare",
+            "EarningsPerShare",
+            # Share counts
+            "WeightedAverageShares",
+            "AdjustedWeightedAverageShares",
+            "IssuedCapital",
+            "NumberOfSharesIssued",
+        ],
+        "balance_sheet": [
+            # Assets
+            "Assets",
+            "CurrentAssets",
+            "NoncurrentAssets",
+            # Cash
+            "CashAndCashEquivalents",
+            "Cash",
+            "CashEquivalents",
+            # Receivables
+            "TradeAndOtherCurrentReceivables",
+            "TradeAndOtherReceivables",
+            "CurrentTradeReceivables",
+            "NoncurrentReceivables",
+            # Inventory
+            "Inventories",
+            "CurrentInventoriesHeldForSale",
+            # Property, plant and equipment
+            "PropertyPlantAndEquipment",
+            "PropertyPlantAndEquipmentNet",
+            "RightofuseAssets",
+            # Intangibles
+            "IntangibleAssetsOtherThanGoodwill",
+            "Goodwill",
+            "GoodwillAndIntangibleAssets",
+            # Investments
+            "OtherFinancialAssets",
+            "CurrentFinancialAssets",
+            "NoncurrentFinancialAssets",
+            "InvestmentsInSubsidiariesJointVenturesAndAssociates",
+            # Other assets
+            "OtherCurrentAssets",
+            "OtherNoncurrentAssets",
+            "DeferredTaxAssets",
+            # Liabilities
+            "Liabilities",
+            "CurrentLiabilities",
+            "NoncurrentLiabilities",
+            # Payables
+            "TradeAndOtherCurrentPayables",
+            "TradeAndOtherPayables",
+            "CurrentTradePayables",
+            # Debt
+            "BorrowingsAndDebtInstruments",
+            "CurrentBorrowings",
+            "NoncurrentBorrowings",
+            "LongtermBorrowings",
+            "ShorttermBorrowings",
+            # Lease liabilities
+            "LeaseLiabilities",
+            "CurrentLeaseLiabilities",
+            "NoncurrentLeaseLiabilities",
+            # Provisions
+            "Provisions",
+            "CurrentProvisions",
+            "NoncurrentProvisions",
+            "OtherProvisions",
+            # Deferred revenue
+            "ContractLiabilities",
+            "DeferredIncome",
+            "DeferredIncomeClassifiedAsCurrent",
+            "DeferredIncomeClassifiedAsNoncurrent",
+            # Tax liabilities
+            "CurrentTaxLiabilities",
+            "DeferredTaxLiabilities",
+            # Other liabilities
+            "OtherCurrentLiabilities",
+            "OtherNoncurrentLiabilities",
+            # Equity
+            "Equity",
+            "EquityAttributableToOwnersOfParent",
+            "IssuedCapital",
+            "SharePremium",
+            "AdditionalPaidinCapital",
+            "RetainedEarnings",
+            "TreasuryShares",
+            "AccumulatedOtherComprehensiveIncome",
+            "NoncontrollingInterests",
+            # Shares outstanding
+            "NumberOfSharesOutstanding",
+            "NumberOfSharesIssued",
+        ],
+        "cash_flow": [
+            # Operating activities
+            "CashFlowsFromUsedInOperatingActivities",
+            "CashFlowsFromUsedInOperations",
+            "ProfitLoss",
+            # Adjustments
+            "AdjustmentsForDepreciationExpense",
+            "AdjustmentsForAmortisationExpense",
+            "AdjustmentsForFinanceCosts",
+            "AdjustmentsForFinanceIncome",
+            "AdjustmentsForIncomeTaxExpense",
+            "AdjustmentsForSharebasedPayments",
+            "AdjustmentsForDecreaseIncreaseInTradeAndOtherReceivables",
+            "AdjustmentsForIncreaseDecreaseInTradeAndOtherPayables",
+            "AdjustmentsForIncreaseDecreaseInDeferredIncome",
+            # Investing activities
+            "CashFlowsFromUsedInInvestingActivities",
+            "PurchaseOfPropertyPlantAndEquipment",
+            "ProceedsFromSalesOfPropertyPlantAndEquipment",
+            "PurchaseOfIntangibleAssets",
+            "AcquisitionOfSubsidiaries",
+            "ProceedsFromDisposalOfSubsidiaries",
+            # Financing activities
+            "CashFlowsFromUsedInFinancingActivities",
+            "ProceedsFromIssuingShares",
+            "PaymentsToAcquireOrRedeemEntitysShares",
+            "ProceedsFromBorrowings",
+            "RepaymentsOfBorrowings",
+            "PaymentsOfLeaseLiabilities",
+            "DividendsPaid",
+            "InterestPaid",
+            # Net change
+            "IncreaseDecreaseInCashAndCashEquivalents",
+            "EffectOfExchangeRateChangesOnCashAndCashEquivalents",
+            "CashAndCashEquivalentsAtEndOfPeriod",
+            "CashAndCashEquivalentsAtBeginningOfPeriod",
+        ],
+    }
+
+    if statement_type not in statement_tags_us_gaap:
         print(
-            f"Error: Invalid financial statement type: {statement_type}. Choose from: {', '.join(statement_tags.keys())}"
+            f"Error: Invalid financial statement type: {statement_type}. Choose from: {', '.join(statement_tags_us_gaap.keys())}"
         )
         return []
 
-    required_tags = statement_tags[statement_type]
+    # Step 1: Detect which taxonomy is available (US GAAP or IFRS)
+    facts_section = company_facts.get("facts", {})
+    us_gaap_facts = facts_section.get("us-gaap", {})
+    ifrs_facts = facts_section.get("ifrs-full", {})
 
-    # Step 1: Collect data for each unique report instance (filing).
+    # Determine which taxonomy to use based on data availability
+    using_ifrs = False
+    taxonomy_facts = us_gaap_facts
+    required_tags = statement_tags_us_gaap[statement_type]
+
+    if not us_gaap_facts and ifrs_facts:
+        # Company uses IFRS (e.g., foreign private issuers like Spotify)
+        using_ifrs = True
+        taxonomy_facts = ifrs_facts
+        required_tags = statement_tags_ifrs[statement_type]
+        logger.info(f"[DEBUG] Using IFRS taxonomy for {symbol_or_cik} (no US GAAP data available)")
+    elif us_gaap_facts and ifrs_facts:
+        # Both taxonomies present - prefer US GAAP but log the situation
+        logger.info(f"[DEBUG] Both US GAAP and IFRS taxonomies present for {symbol_or_cik}, using US GAAP")
+    elif not us_gaap_facts and not ifrs_facts:
+        logger.warning(f"[DEBUG] No US GAAP or IFRS facts available for {symbol_or_cik}")
+        return []
+
+    # Step 2: Collect data for each unique report instance (filing).
     # Key: (form_group, end_date, filed_at)
     # Value: Dictionary holding report details and its financial data.
     report_instances_data = {}
-
-    facts_section = company_facts.get("facts", {})
-    us_gaap_facts = facts_section.get("us-gaap", {})
 
     # Define EPS and share count tags for special handling
     eps_tags = {
@@ -533,7 +994,7 @@ def _get_financial_statement_data(
     }
 
     for tag in required_tags:
-        concept_data = us_gaap_facts.get(tag, {})
+        concept_data = taxonomy_facts.get(tag, {})
         for unit_type, facts_list in concept_data.get("units", {}).items():
             # Group facts by (form_type, filed_at, end_date, start_date)
             values_by_key = {}
@@ -556,13 +1017,22 @@ def _get_financial_statement_data(
                 ):
                     continue
 
+                # Determine form group - handle both US domestic (10-K/10-Q) and
+                # foreign private issuer forms (20-F/6-K)
                 form_group = None
-                if form_type.upper().startswith("10-K"):
+                form_upper = form_type.upper()
+                if form_upper.startswith("10-K"):
                     form_group = "10-K"
-                elif form_type.upper().startswith("10-Q"):
+                elif form_upper.startswith("10-Q"):
+                    form_group = "10-Q"
+                elif form_upper.startswith("20-F"):
+                    # 20-F is the annual report for foreign private issuers (equivalent to 10-K)
+                    form_group = "10-K"
+                elif form_upper.startswith("6-K"):
+                    # 6-K is the periodic report for foreign private issuers (equivalent to 10-Q)
                     form_group = "10-Q"
                 else:
-                    continue  # Only process 10-K and 10-Q related forms
+                    continue  # Only process 10-K, 10-Q, 20-F, and 6-K related forms
 
                 report_instance_key = (form_group, end_date, filed_at)
                 if report_instance_key not in report_instances_data:
@@ -617,42 +1087,9 @@ def _get_financial_statement_data(
     for key in reports_by_period:
         reports_by_period[key].sort(key=lambda r: r["filedAt"])  # ascending
 
-    # Define key balance sheet items to check for data completeness
-    key_balance_sheet_items = [
-        "CashAndCashEquivalentsAtCarryingValue",
-        "AssetsCurrent",
-        "Assets",
-        "LiabilitiesCurrent",
-        "StockholdersEquity",
-    ]
-
-    # Define key income statement items to check for data completeness
-    key_income_statement_items = [
-        "Revenues",
-        "RevenueFromContractWithCustomerIncludingAssessedTax",
-        "OperatingIncomeLoss",
-        "NetIncomeLoss",
-        "CostOfRevenue",
-        "GrossProfit",
-    ]
-
-    # Define key cash flow items to check for data completeness
-    key_cash_flow_items = [
-        "NetCashProvidedByUsedInOperatingActivities",
-        "OperatingCashFlow",
-        "NetOperatingCashFlow",
-        "NetIncomeLoss",
-        "DepreciationDepletionAndAmortization",
-    ]
-
-    # Select appropriate key items based on statement type
-    key_items_to_check = []
-    if statement_type == "balance_sheet":
-        key_items_to_check = key_balance_sheet_items
-    elif statement_type == "income_statement":
-        key_items_to_check = key_income_statement_items
-    elif statement_type == "cash_flow":
-        key_items_to_check = key_cash_flow_items
+    # Select appropriate key items based on statement type and taxonomy using module-level constant
+    taxonomy_key = "ifrs" if using_ifrs else "us_gaap"
+    key_items_to_check = KEY_ITEMS.get(statement_type, {}).get(taxonomy_key, [])
 
     for key, reports in reports_by_period.items():
         if not reports:
@@ -786,11 +1223,12 @@ def _get_financial_statement_data(
 
     deduped_reports = []
     for end_date, reports in reports_by_end_date.items():
+        # Include both US domestic forms (10-K, 10-Q) and foreign private issuer forms (20-F, 6-K)
         originals = [
-            r for r in reports if r.get("formType", "").upper() in ("10-K", "10-Q")
+            r for r in reports if r.get("formType", "").upper() in ("10-K", "10-Q", "20-F", "6-K")
         ]
         amendments = [
-            r for r in reports if r.get("formType", "").upper() in ("10-K/A", "10-Q/A")
+            r for r in reports if r.get("formType", "").upper() in ("10-K/A", "10-Q/A", "20-F/A", "6-K/A")
         ]
         if originals:
             originals.sort(key=lambda r: r.get("filedAt", ""), reverse=True)
@@ -855,55 +1293,31 @@ def _get_financial_statement_data(
     for period_details in deduplicated_reports:
         data = period_details.get("data", {})
 
-        # Use _get_financial_value as before
+        # Helper function that leverages _get_financial_value for tag lookup
         def get_val(tag, preferred_unit=None, alternate_tags=None, default=0):
+            """
+            Retrieves a financial value by trying primary tag then alternates.
+            Uses _get_financial_value for consistent tag lookup logic.
+            """
             tags_to_try = [tag]
             if alternate_tags:
                 if isinstance(alternate_tags, str):
                     tags_to_try.append(alternate_tags)
                 elif isinstance(alternate_tags, list):
                     tags_to_try.extend(alternate_tags)
-            for t in tags_to_try:
-                if t in data:
-                    val = _get_financial_value(data, t)
-                    if val is not None:
-                        return val
-            return default
+            # Use module-level helper for consistent lookup
+            return _get_first_available_value(data, tags_to_try, default)
 
         # Determine period string (FY, Q1, Q2, etc.)
         period_val = period_details["fiscalPeriod"]
         if period_details["formGroup"] == "10-K":
             period_val = "FY"
 
-        # Revenue: Try a list of common tags in order of preference.
-        # Ensure these tags are included in statement_tags["income_statement"]
-        # above.
-        revenue = 0  # Default value
-        revenue_possible_tags = [
-            "Revenues",
-            "RevenueFromContractWithCustomerExcludingAssessedTax",
-            "RevenueFromContractWithCustomerIncludingAssessedTax",
-            "SalesRevenueNet",
-            "SalesRevenueGoodsNet",
-            "SalesRevenueServicesNet",
-        ]
-        for r_tag in revenue_possible_tags:
-            if r_tag in data:  # Check if the tag was found and data collected for it
-                revenue = get_val(r_tag)
-                # If we found a non-zero revenue, prefer it. If it's 0,
-                # continue checking.
-                if revenue != 0:
-                    break  # Use the first non-zero revenue found from the preferred list
-        # If all found tags resulted in 0, revenue remains 0. If no tags were
-        # found, revenue remains 0.
+        # Revenue: Use centralized TAG_MAPPINGS for US GAAP and IFRS tags
+        revenue = _get_value_from_tags(data, TAG_MAPPINGS["revenue"], default=0)
 
-        costOfRevenue = 0
-        costOfRevenue_possible_tags = ["CostOfRevenue", "CostOfGoodsAndServicesSold"]
-        for tag in costOfRevenue_possible_tags:
-            if tag in data:
-                costOfRevenue = get_val(tag)
-                if costOfRevenue != 0:
-                    break
+        # Cost of Revenue: Use centralized TAG_MAPPINGS
+        costOfRevenue = _get_value_from_tags(data, TAG_MAPPINGS["costOfRevenue"], default=0)
 
         # GrossProfit can be explicitly found or calculated.
         # If GrossProfit tag exists and is non-zero, use it. Otherwise,
@@ -919,11 +1333,25 @@ def _get_financial_statement_data(
 
         generalAndAdministrativeExpenses = 0
         sellingAndMarketingExpenses = 0
+        # US GAAP tags
         researchAndDevelopmentExpense = get_val("ResearchAndDevelopmentExpense")
         sga_combined = get_val("SellingGeneralAndAdministrativeExpense")
         ga_separate = get_val("GeneralAndAdministrativeExpense")
         sm_separate = get_val("SellingAndMarketingExpense")
         otherOperatingExpenses_val = get_val("OtherOperatingExpenses")
+        # IFRS tags (if US GAAP tags not found)
+        if researchAndDevelopmentExpense == 0:
+            researchAndDevelopmentExpense = get_val("ResearchAndDevelopmentExpense")  # Same in IFRS
+        if sga_combined == 0:
+            sga_combined = get_val("SellingGeneralAndAdministrativeExpense")  # Same in IFRS
+        if ga_separate == 0:
+            ga_separate = get_val("AdministrativeExpense")  # IFRS alternative
+        if sm_separate == 0:
+            sm_separate = get_val("SellingExpense")  # IFRS alternative
+            if sm_separate == 0:
+                sm_separate = get_val("DistributionCosts")  # IFRS alternative
+        if otherOperatingExpenses_val == 0:
+            otherOperatingExpenses_val = get_val("OtherExpenseByFunction")  # IFRS alternative
 
         if ga_separate != 0 or sm_separate != 0:  # Prefer separate tags if available
             generalAndAdministrativeExpenses = ga_separate
@@ -954,12 +1382,13 @@ def _get_financial_statement_data(
         # Derived (Cost of Revenue + All Operating Expenses)
         costAndExpenses = costOfRevenue + operatingExpenses
 
-        # Interest Income / Expense
-        # Prioritize discrete InterestIncome and InterestExpense. Fallback to
-        # InterestIncomeExpenseNet.
-        interestIncome_val = get_val("InterestIncome")
-        interestExpense_val = get_val("InterestExpense")
+        # Interest Income / Expense: Use centralized TAG_MAPPINGS
+        # Prioritize discrete InterestIncome and InterestExpense. Fallback to InterestIncomeExpenseNet.
+        interestIncome_val = _get_value_from_tags(data, TAG_MAPPINGS["interestIncome"], default=0)
+        interestExpense_val = _get_value_from_tags(data, TAG_MAPPINGS["interestExpense"], default=0)
         interestIncomeExpenseNet_val = get_val("InterestIncomeExpenseNet")
+        if interestIncomeExpenseNet_val == 0:
+            interestIncomeExpenseNet_val = get_val("NetFinanceIncome")
 
         if (
             interestIncome_val == 0
@@ -975,9 +1404,14 @@ def _get_financial_statement_data(
 
         netInterestIncome = interestIncome_val - interestExpense_val  # Derived
 
-        depreciationAndAmortization = get_val("DepreciationDepletionAndAmortization")
+        # Depreciation and Amortization: Use centralized TAG_MAPPINGS
+        depreciationAndAmortization = _get_value_from_tags(data, TAG_MAPPINGS["depreciation"], default=0)
+        # Additional IFRS fallback for sum of depreciation and amortization
+        if depreciationAndAmortization == 0:
+            depreciationAndAmortization = get_val("AdjustmentsForDepreciationExpense") + get_val("AdjustmentsForAmortisationExpense")
 
-        operatingIncome = get_val("OperatingIncomeLoss")
+        # Operating Income: Use centralized TAG_MAPPINGS
+        operatingIncome = _get_value_from_tags(data, TAG_MAPPINGS["operatingIncome"], default=0)
 
         # If operatingIncome is zero from tag, try alternative methods
         if operatingIncome == 0:
@@ -1037,27 +1471,23 @@ def _get_financial_statement_data(
 
         totalOtherIncomeExpensesNet = get_val("NonoperatingIncomeLoss")
 
-        incomeBeforeTax = 0
-        incomeBeforeTax_possible_tags = [
-            "IncomeLossFromContinuingOperationsBeforeIncomeTax",
-            "IncomeBeforeIncomeTax",
-            "IncomeBeforeTax",
-            "ProfitLossBeforeTax",
-        ]
-        for tag in incomeBeforeTax_possible_tags:
-            if tag in data:
-                incomeBeforeTax = get_val(tag)
-                if incomeBeforeTax != 0:
-                    break
+        # Income Before Tax: Use centralized TAG_MAPPINGS
+        incomeBeforeTax = _get_value_from_tags(data, TAG_MAPPINGS["incomeBeforeTax"], default=0)
         # Fallback calculation for Income Before Tax (EBT)
         if incomeBeforeTax == 0 and operatingIncome != 0:
             incomeBeforeTax = (
                 operatingIncome + netInterestIncome + totalOtherIncomeExpensesNet
             )  # Common derivation
 
-        incomeTaxExpense = get_val("IncomeTaxExpenseBenefit")
+        # Income Tax Expense: Use centralized TAG_MAPPINGS
+        incomeTaxExpense = _get_value_from_tags(data, TAG_MAPPINGS["incomeTax"], default=0)
+        # Additional IFRS fallback for sum of current and deferred tax
+        if incomeTaxExpense == 0:
+            incomeTaxExpense = get_val("CurrentTaxExpenseIncome") + get_val("DeferredTaxExpenseIncome")
 
-        netIncome = get_val("NetIncomeLoss")
+        # Net Income: Use centralized TAG_MAPPINGS
+        netIncome = _get_value_from_tags(data, TAG_MAPPINGS["netIncome"], default=0)
+
         netIncomeFromDiscontinuedOperations = get_val(
             "NetIncomeLossFromDiscontinuedOperationsNetOfTax"
         )
@@ -1065,12 +1495,13 @@ def _get_financial_statement_data(
             netIncome - netIncomeFromDiscontinuedOperations
         )  # Derived
 
-        eps = get_val("EarningsPerShareBasic")
-        epsDiluted = get_val("EarningsPerShareDiluted")
-        weightedAverageShsOut = get_val("WeightedAverageNumberOfSharesOutstandingBasic")
-        weightedAverageShsOutDil = get_val(
-            "WeightedAverageNumberOfDilutedSharesOutstanding"
-        )
+        # EPS: Use centralized TAG_MAPPINGS
+        eps = _get_value_from_tags(data, TAG_MAPPINGS["eps"], default=0)
+        epsDiluted = _get_value_from_tags(data, TAG_MAPPINGS["epsDiluted"], default=0)
+
+        # Weighted Average Shares: Use centralized TAG_MAPPINGS
+        weightedAverageShsOut = _get_value_from_tags(data, TAG_MAPPINGS["sharesOutstanding"], default=0)
+        weightedAverageShsOutDil = _get_value_from_tags(data, TAG_MAPPINGS["sharesOutstandingDiluted"], default=0)
 
         # Base item structure common to all statement types
         base_item = {
@@ -1127,16 +1558,8 @@ def _get_financial_statement_data(
         elif statement_type == "balance_sheet":
 
             # ASSETS
-            # Current Assets
-            cashAndCashEquivalents = get_val(
-                "CashAndCashEquivalentsAtCarryingValue",
-                alternate_tags=[
-                    "CashAndCashEquivalents",
-                    "Cash",
-                    "CashAndCashEquivalentsAtCarryingValue",
-                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",  # Alternative tag used by LEN in recent years
-                ],
-            )
+            # Current Assets - Cash: Use centralized TAG_MAPPINGS
+            cashAndCashEquivalents = _get_value_from_tags(data, TAG_MAPPINGS["cash"], default=0)
 
             shortTermInvestments = get_val(
                 "MarketableSecuritiesCurrent",
@@ -1144,6 +1567,8 @@ def _get_financial_statement_data(
                     "ShortTermInvestments",
                     "AvailableForSaleSecuritiesCurrent",
                     "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost",
+                    "CurrentFinancialAssets",  # IFRS
+                    "OtherFinancialAssets",  # IFRS
                 ],
             )
 
@@ -1154,20 +1579,27 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "ReceivablesNetCurrent",
                     "AccountsReceivableGrossCurrent",
-                    "AccountsReceivableNet",  # Alternative tag used by LEN
-                    "AccountsAndNotesReceivableNet",  # Alternative tag used by LEN in recent years
+                    "AccountsReceivableNet",
+                    "AccountsAndNotesReceivableNet",
+                    "TradeAndOtherCurrentReceivables",  # IFRS
+                    "TradeAndOtherReceivables",  # IFRS
+                    "CurrentTradeReceivables",  # IFRS
                 ],
             )
 
             accountsReceivables = get_val(
                 "AccountsReceivableTradeCurrent",
-                alternate_tags=["AccountsReceivableGrossCurrent"],
+                alternate_tags=[
+                    "AccountsReceivableGrossCurrent",
+                    "CurrentTradeReceivables",  # IFRS
+                ],
             )
             otherReceivables = get_val(
                 "OtherReceivablesCurrent",
                 alternate_tags=[
                     "NotesAndLoansReceivableNetCurrent",
                     "ContractReceivableRetainage",
+                    "NoncurrentReceivables",  # IFRS
                 ],
             )
             inventory = get_val(
@@ -1177,8 +1609,10 @@ def _get_financial_statement_data(
                     "InventoryFinishedGoods",
                     "InventoryRawMaterials",
                     "InventoryWorkInProcess",
-                    "InventoryOperativeBuilders",  # Alternative tag used by LEN
-                    "InventoryAdjustments",  # Alternative tag used by LEN in recent years
+                    "InventoryOperativeBuilders",
+                    "InventoryAdjustments",
+                    "Inventories",  # IFRS
+                    "CurrentInventoriesHeldForSale",  # IFRS
                 ],
             )
 
@@ -1196,6 +1630,7 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "AssetsHeldForSaleCurrent",
                     "AssetsOfDisposalGroupIncludingDiscontinuedOperationCurrent",
+                    "CurrentAssets",  # IFRS
                 ],
             )
             if totalCurrentAssets == 0:
@@ -1214,6 +1649,8 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "PropertyPlantAndEquipmentNet",
                     "PropertyPlantAndEquipmentGross",
+                    "PropertyPlantAndEquipment",  # IFRS
+                    "RightofuseAssets",  # IFRS
                 ],
             )
             # Fallback: try before-accum-depr minus accum-depr if net is missing
@@ -1228,13 +1665,17 @@ def _get_financial_statement_data(
                     propertyPlantEquipmentNet = ppe_before - accum_depr
             goodwill = get_val(
                 "Goodwill",
-                alternate_tags=["GoodwillImpairedAccumulatedImpairmentLoss"],
+                alternate_tags=[
+                    "GoodwillImpairedAccumulatedImpairmentLoss",
+                    "GoodwillAndIntangibleAssets",  # IFRS sometimes combines
+                ],
             )
             intangibleAssets = get_val(
                 "IntangibleAssetsNetExcludingGoodwill",
                 alternate_tags=[
                     "IntangibleAssets",
                     "IntangibleAssetsGrossExcludingGoodwill",
+                    "IntangibleAssetsOtherThanGoodwill",  # IFRS
                 ],
             )
 
@@ -1247,6 +1688,8 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "LongTermInvestments",
                     "AvailableForSaleSecuritiesRestrictedNoncurrent",
+                    "NoncurrentFinancialAssets",  # IFRS
+                    "InvestmentsInSubsidiariesJointVenturesAndAssociates",  # IFRS
                 ],
             )
             taxAssets = get_val(
@@ -1254,6 +1697,7 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "DeferredTaxAssetsNetCurrent",
                     "DeferredTaxAssetsNetNoncurrent",
+                    "DeferredTaxAssets",  # IFRS
                 ],
             )
             otherNonCurrentAssets = get_val(
@@ -1262,7 +1706,10 @@ def _get_financial_statement_data(
             )
 
             totalNonCurrentAssets = get_val(
-                "AssetsNoncurrent", alternate_tags=["NoncurrentAssets"]
+                "AssetsNoncurrent",
+                alternate_tags=[
+                    "NoncurrentAssets",  # IFRS
+                ],
             )
             if totalNonCurrentAssets == 0:
                 # If the total isn't explicitly stated, sum the components
@@ -1288,7 +1735,9 @@ def _get_financial_statement_data(
                 "AccountsPayableCurrent",
                 alternate_tags=[
                     "IncreaseDecreaseInAccountsPayable",
-                    "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",  # Alternative tag used by LEN in recent years
+                    "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",
+                    "TradeAndOtherCurrentPayables",  # IFRS
+                    "CurrentTradePayables",  # IFRS
                 ],
             )
             otherPayables = get_val("OtherAccountsPayableCurrent")
@@ -1303,7 +1752,11 @@ def _get_financial_statement_data(
 
             shortTermDebt = get_val(
                 "DebtCurrent",
-                alternate_tags=["LongTermDebtAndCapitalLeaseObligationsCurrent"],
+                alternate_tags=[
+                    "LongTermDebtAndCapitalLeaseObligationsCurrent",
+                    "CurrentBorrowings",  # IFRS
+                    "ShorttermBorrowings",  # IFRS
+                ],
             )
             if shortTermDebt == 0:
                 component_sum = (
@@ -1322,19 +1775,34 @@ def _get_financial_statement_data(
 
             capitalLeaseObligationsCurrent = get_val(
                 "OperatingLeaseLiabilityCurrent",
-                alternate_tags=["CapitalLeaseObligationsCurrent"],
+                alternate_tags=[
+                    "CapitalLeaseObligationsCurrent",
+                    "CurrentLeaseLiabilities",  # IFRS
+                    "LeaseLiabilities",  # IFRS
+                ],
             )
-            taxPayables = get_val("IncomeTaxesPayable")
+            taxPayables = get_val(
+                "IncomeTaxesPayable",
+                alternate_tags=[
+                    "CurrentTaxLiabilities",  # IFRS
+                ],
+            )
             deferredRevenue = get_val(
                 "DeferredRevenueCurrent",
-                alternate_tags=["ContractWithCustomerLiabilityCurrent"],
+                alternate_tags=[
+                    "ContractWithCustomerLiabilityCurrent",
+                    "ContractLiabilities",  # IFRS
+                    "DeferredIncome",  # IFRS
+                    "DeferredIncomeClassifiedAsCurrent",  # IFRS
+                ],
             )
             otherCurrentLiabilities = get_val("OtherLiabilitiesCurrent")
 
             totalCurrentLiabilities = get_val(
                 "LiabilitiesCurrent",
                 alternate_tags=[
-                    "LiabilitiesOfDisposalGroupIncludingDiscontinuedOperationCurrent"
+                    "LiabilitiesOfDisposalGroupIncludingDiscontinuedOperationCurrent",
+                    "CurrentLiabilities",  # IFRS
                 ],
             )
             if totalCurrentLiabilities == 0:
@@ -1352,22 +1820,41 @@ def _get_financial_statement_data(
             # Non-Current Liabilities
             longTermDebt_val = get_val(
                 "LongTermDebtNoncurrent",
-                alternate_tags=["LongTermDebt"],
+                alternate_tags=[
+                    "LongTermDebt",
+                    "NoncurrentBorrowings",  # IFRS
+                    "LongtermBorrowings",  # IFRS
+                    "BorrowingsAndDebtInstruments",  # IFRS
+                ],
             )
             capitalLeaseObligationsNonCurrent = get_val(
                 "OperatingLeaseLiabilityNoncurrent",
-                alternate_tags=["CapitalLeaseObligationsNoncurrent"],
+                alternate_tags=[
+                    "CapitalLeaseObligationsNoncurrent",
+                    "NoncurrentLeaseLiabilities",  # IFRS
+                ],
             )
             deferredRevenueNonCurrent = get_val(
                 "DeferredRevenueNoncurrent",
-                alternate_tags=["ContractWithCustomerLiabilityNoncurrent"],
+                alternate_tags=[
+                    "ContractWithCustomerLiabilityNoncurrent",
+                    "DeferredIncomeClassifiedAsNoncurrent",  # IFRS
+                ],
             )
             deferredTaxLiabilitiesNonCurrent = get_val(
-                "DeferredTaxLiabilitiesNoncurrent"
+                "DeferredTaxLiabilitiesNoncurrent",
+                alternate_tags=[
+                    "DeferredTaxLiabilities",  # IFRS
+                ],
             )
             otherNonCurrentLiabilities = get_val("OtherLiabilitiesNoncurrent")
 
-            totalNonCurrentLiabilities = get_val("LiabilitiesNoncurrent")
+            totalNonCurrentLiabilities = get_val(
+                "LiabilitiesNoncurrent",
+                alternate_tags=[
+                    "NoncurrentLiabilities",  # IFRS
+                ],
+            )
             if totalNonCurrentLiabilities == 0:
                 totalNonCurrentLiabilities = (
                     longTermDebt_val
@@ -1384,13 +1871,21 @@ def _get_financial_statement_data(
             # Total Liabilities
             totalLiabilities = get_val(
                 "Liabilities",
-                alternate_tags=["TotalLiabilities", "LiabilitiesAndStockholdersEquity"],
+                alternate_tags=[
+                    "TotalLiabilities",
+                    "LiabilitiesAndStockholdersEquity",
+                ],
             )
             if totalLiabilities == 0:
                 totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities
 
             # EQUITY
-            treasuryStock = get_val("TreasuryStockValue")
+            treasuryStock = get_val(
+                "TreasuryStockValue",
+                alternate_tags=[
+                    "TreasuryShares",  # IFRS
+                ],
+            )
             preferredStock = get_val(
                 "PreferredStockValue",
                 alternate_tags=["RedeemablePreferredStockCarryingAmount"],
@@ -1402,11 +1897,16 @@ def _get_financial_statement_data(
                     "CommonStocksIncludingAdditionalPaidInCapital",
                     "CommonStockSharesOutstanding",
                     "CommonStockSharesIssued",
+                    "IssuedCapital",  # IFRS
                 ],
             )
             additionalPaidInCapital = get_val(
                 "AdditionalPaidInCapital",
-                alternate_tags=["AdditionalPaidInCapitalCommonStock"],
+                alternate_tags=[
+                    "AdditionalPaidInCapitalCommonStock",
+                    "SharePremium",  # IFRS
+                    "AdditionalPaidinCapital",  # IFRS (note different casing)
+                ],
             )
             if (
                 commonStock == get_val("CommonStocksIncludingAdditionalPaidInCapital")
@@ -1417,13 +1917,22 @@ def _get_financial_statement_data(
                     commonStock = get_val("CommonStockValue")
             retainedEarnings = get_val(
                 "RetainedEarningsAccumulatedDeficit",
-                alternate_tags=["RetainedEarnings"],
+                alternate_tags=[
+                    "RetainedEarnings",  # IFRS also uses this
+                ],
             )
             accumulatedOtherComprehensiveIncomeLoss = get_val(
-                "AccumulatedOtherComprehensiveIncomeLossNetOfTax"
+                "AccumulatedOtherComprehensiveIncomeLossNetOfTax",
+                alternate_tags=[
+                    "AccumulatedOtherComprehensiveIncome",  # IFRS
+                ],
             )
             minorityInterest = get_val(
-                "MinorityInterest", alternate_tags=["NoncontrollingInterest"]
+                "MinorityInterest",
+                alternate_tags=[
+                    "NoncontrollingInterest",
+                    "NoncontrollingInterests",  # IFRS
+                ],
             )
 
             # Total Equity
@@ -1432,6 +1941,8 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "TotalStockholdersEquity",
                     "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                    "Equity",  # IFRS
+                    "EquityAttributableToOwnersOfParent",  # IFRS
                 ],
             )
 
@@ -1527,23 +2038,54 @@ def _get_financial_statement_data(
             }
         elif statement_type == "cash_flow":
             # Operating Activities
-            netIncome_cf = get_val("NetIncomeLoss")  # Often starting point
+            netIncome_cf = get_val(
+                "NetIncomeLoss",
+                alternate_tags=[
+                    "NetIncomeLossAvailableToCommonStockholdersBasic",
+                    "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
+                    "ProfitLoss",  # IFRS
+                    "ProfitLossAttributableToOwnersOfParent",  # IFRS
+                ],
+            )  # Often starting point
             depreciationAndAmortization_cf = get_val(
-                "DepreciationDepletionAndAmortization"
+                "DepreciationDepletionAndAmortization",
+                alternate_tags=[
+                    "DepreciationAndAmortisationExpense",  # IFRS
+                    "AdjustmentsForDepreciationExpense",  # IFRS
+                ],
             )
             deferredIncomeTax_cf = get_val(
                 "DeferredIncomeTaxExpenseBenefit",
-                alternate_tags=["IncreaseDecreaseInDeferredIncomeTaxes"],
+                alternate_tags=[
+                    "IncreaseDecreaseInDeferredIncomeTaxes",
+                    "DeferredTaxExpenseIncome",  # IFRS
+                ],
             )
-            stockBasedCompensation_cf = get_val("ShareBasedCompensation")
+            stockBasedCompensation_cf = get_val(
+                "ShareBasedCompensation",
+                alternate_tags=[
+                    "AdjustmentsForSharebasedPayments",  # IFRS
+                ],
+            )
 
             accountsReceivables_flow = get_val(
-                "IncreaseDecreaseInAccountsReceivableNetCurrent"
+                "IncreaseDecreaseInAccountsReceivableNetCurrent",
+                alternate_tags=[
+                    "AdjustmentsForDecreaseIncreaseInTradeAndOtherReceivables",  # IFRS
+                ],
             )
             inventory_flow = get_val("IncreaseDecreaseInInventoriesNet")
-            accountsPayables_flow = get_val("IncreaseDecreaseInAccountsPayableCurrent")
+            accountsPayables_flow = get_val(
+                "IncreaseDecreaseInAccountsPayableCurrent",
+                alternate_tags=[
+                    "AdjustmentsForIncreaseDecreaseInTradeAndOtherPayables",  # IFRS
+                ],
+            )
             otherWorkingCapital_flow = get_val(
-                "IncreaseDecreaseInOtherOperatingAssetsLiabilitiesNet"
+                "IncreaseDecreaseInOtherOperatingAssetsLiabilitiesNet",
+                alternate_tags=[
+                    "AdjustmentsForIncreaseDecreaseInDeferredIncome",  # IFRS
+                ],
             )
             changeInWorkingCapital = (
                 accountsReceivables_flow
@@ -1553,13 +2095,19 @@ def _get_financial_statement_data(
             )  # Sum of individual flow components
 
             otherNonCashItems_cf = get_val("OtherNoncashIncomeExpense")
-            netCashProvidedByOperatingActivities = get_val(
-                "NetCashProvidedByUsedInOperatingActivities",
-                alternate_tags=["OperatingCashFlow", "NetOperatingCashFlow"],
+            # Operating Cash Flow: Use centralized TAG_MAPPINGS
+            netCashProvidedByOperatingActivities = _get_value_from_tags(
+                data, TAG_MAPPINGS["operatingCashFlow"], default=0
             )
             # Fallback: sum up main components if all are present and netCashProvidedByOperatingActivities is 0
             if not netCashProvidedByOperatingActivities:
-                net_income = get_val("NetIncomeLoss")
+                net_income = get_val(
+                    "NetIncomeLoss",
+                    alternate_tags=[
+                        "NetIncomeLossAvailableToCommonStockholdersBasic",
+                        "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
+                    ],
+                )
                 depreciation = get_val("DepreciationDepletionAndAmortization")
                 deferred_tax = get_val(
                     "DeferredIncomeTaxExpenseBenefit",
@@ -1585,23 +2133,55 @@ def _get_financial_statement_data(
                     )
 
             # Investing Activities
-            investmentsInPropertyPlantAndEquipment = get_val(
-                "PaymentsToAcquirePropertyPlantAndEquipment"
+            # CapEx: Use centralized TAG_MAPPINGS
+            investmentsInPropertyPlantAndEquipment = _get_value_from_tags(
+                data, TAG_MAPPINGS["capex"], default=0
             )  # Typically negative
-            acquisitionsNet_cf = get_val("PaymentsToAcquireBusinessesNetOfCashAcquired")
-            purchasesOfInvestments_cf = get_val("PaymentsForPurchasesOfInvestments")
-            salesMaturitiesOfInvestments_cf = get_val(
-                "ProceedsFromSaleAndMaturityOfMarketableSecurities"
+            acquisitionsNet_cf = get_val(
+                "PaymentsToAcquireBusinessesNetOfCashAcquired",
+                alternate_tags=[
+                    "AcquisitionOfSubsidiaries",  # IFRS
+                    "CashFlowsUsedInObtainingControlOfSubsidiariesOrOtherBusinessesClassifiedAsInvestingActivities",  # IFRS
+                ],
             )
-            otherInvestingActivities_cf = get_val("OtherInvestingActivitiesCashFlows")
-            netCashProvidedByInvestingActivities = get_val(
-                "NetCashProvidedByUsedInInvestingActivities"
+            purchasesOfInvestments_cf = get_val(
+                "PaymentsForPurchasesOfInvestments",
+                alternate_tags=[
+                    "PurchaseOfIntangibleAssets",  # IFRS
+                    "OtherCashPaymentsToAcquireEquityOrDebtInstrumentsOfOtherEntitiesClassifiedAsInvestingActivities",  # IFRS
+                ],
+            )
+            salesMaturitiesOfInvestments_cf = get_val(
+                "ProceedsFromSaleAndMaturityOfMarketableSecurities",
+                alternate_tags=[
+                    "ProceedsFromSalesOfPropertyPlantAndEquipment",  # IFRS
+                    "ProceedsFromDisposalOfSubsidiaries",  # IFRS
+                    "OtherCashReceiptsFromSalesOfEquityOrDebtInstrumentsOfOtherEntitiesClassifiedAsInvestingActivities",  # IFRS
+                ],
+            )
+            otherInvestingActivities_cf = get_val(
+                "OtherInvestingActivitiesCashFlows",
+                alternate_tags=[
+                    "OtherInflowsOutflowsOfCashClassifiedAsInvestingActivities",  # IFRS
+                ],
+            )
+            # Investing Cash Flow: Use centralized TAG_MAPPINGS
+            netCashProvidedByInvestingActivities = _get_value_from_tags(
+                data, TAG_MAPPINGS["investingCashFlow"], default=0
             )
 
             # Financing Activities
-            proceedsFromLongTermDebt = get_val("ProceedsFromIssuanceOfLongTermDebt")
+            proceedsFromLongTermDebt = get_val(
+                "ProceedsFromIssuanceOfLongTermDebt",
+                alternate_tags=[
+                    "ProceedsFromBorrowings",  # IFRS
+                ],
+            )
             repaymentsOfLongTermDebt = get_val(
-                "RepaymentsOfLongTermDebt"
+                "RepaymentsOfLongTermDebt",
+                alternate_tags=[
+                    "RepaymentsOfBorrowings",  # IFRS
+                ],
             )  # Typically negative
             longTermNetDebtIssuance = (
                 proceedsFromLongTermDebt + repaymentsOfLongTermDebt
@@ -1617,9 +2197,17 @@ def _get_financial_statement_data(
 
             netDebtIssuance = longTermNetDebtIssuance + shortTermNetDebtIssuance
 
-            proceedsFromCommonStock = get_val("ProceedsFromIssuanceOfCommonStock")
+            proceedsFromCommonStock = get_val(
+                "ProceedsFromIssuanceOfCommonStock",
+                alternate_tags=[
+                    "ProceedsFromIssuingShares",  # IFRS
+                ],
+            )
             paymentsForRepurchaseOfCommonStock = get_val(
-                "PaymentsForRepurchaseOfCommonStock"
+                "PaymentsForRepurchaseOfCommonStock",
+                alternate_tags=[
+                    "PaymentsToAcquireOrRedeemEntitysShares",  # IFRS
+                ],
             )  # Typically negative
             netCommonStockIssuance = (
                 proceedsFromCommonStock + paymentsForRepurchaseOfCommonStock
@@ -1638,27 +2226,55 @@ def _get_financial_statement_data(
             netStockIssuance = netCommonStockIssuance + netPreferredStockIssuance
 
             commonDividendsPaid_cf = get_val(
-                "PaymentsOfDividendsCommonStock"
+                "PaymentsOfDividendsCommonStock",
+                alternate_tags=[
+                    "DividendsPaid",  # IFRS
+                ],
             )  # Typically negative
             preferredDividendsPaid_cf = get_val(
                 "PaymentsOfDividendsPreferredStock"
             )  # Typically negative
             netDividendsPaid_cf = commonDividendsPaid_cf + preferredDividendsPaid_cf
 
-            otherFinancingActivities_cf = get_val("OtherFinancingActivitiesCashFlows")
-            netCashProvidedByFinancingActivities = get_val(
-                "NetCashProvidedByUsedInFinancingActivities"
+            otherFinancingActivities_cf = get_val(
+                "OtherFinancingActivitiesCashFlows",
+                alternate_tags=[
+                    "OtherInflowsOutflowsOfCashClassifiedAsFinancingActivities",  # IFRS
+                    "PaymentsOfLeaseLiabilities",  # IFRS
+                ],
+            )
+            # Financing Cash Flow: Use centralized TAG_MAPPINGS
+            netCashProvidedByFinancingActivities = _get_value_from_tags(
+                data, TAG_MAPPINGS["financingCashFlow"], default=0
             )
 
             # Summary
             effectOfForexChangesOnCash_cf = get_val(
-                "EffectOfExchangeRateOnCashAndCashEquivalents"
+                "EffectOfExchangeRateOnCashAndCashEquivalents",
+                alternate_tags=[
+                    "EffectOfExchangeRateChangesOnCashAndCashEquivalents",  # IFRS
+                ],
             )
-            netChangeInCash = get_val("CashAndCashEquivalentsPeriodIncreaseDecrease")
-            cashAtEndOfPeriod_cf = get_val("CashAndCashEquivalentsAtCarryingValue")
+            netChangeInCash = get_val(
+                "CashAndCashEquivalentsPeriodIncreaseDecrease",
+                alternate_tags=[
+                    "IncreaseDecreaseInCashAndCashEquivalents",  # IFRS
+                    "IncreaseDecreaseInCashAndCashEquivalentsBeforeEffectOfExchangeRateChanges",  # IFRS
+                ],
+            )
+            cashAtEndOfPeriod_cf = get_val(
+                "CashAndCashEquivalentsAtCarryingValue",
+                alternate_tags=[
+                    "CashAndCashEquivalents",  # IFRS
+                    "CashAndCashEquivalentsAtEndOfPeriod",  # IFRS
+                ],
+            )
             cashAtBeginningOfPeriod_cf = get_val(
                 "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsAtBeginningOfPeriod",
-                alternate_tags=["CashAndCashEquivalentsAtBeginningOfPeriod"],
+                alternate_tags=[
+                    "CashAndCashEquivalentsAtBeginningOfPeriod",
+                    "CashAndCashEquivalentsAtEndOfPeriod",  # IFRS (previous period's ending)
+                ],
             )
             if (
                 cashAtBeginningOfPeriod_cf == 0
@@ -1856,7 +2472,13 @@ class SECHelper:
         data2 = report2.get("data", {})
 
         # Simple key metrics to check
-        key_metrics = ["Revenues", "OperatingIncomeLoss", "NetIncomeLoss"]
+        key_metrics = [
+            "Revenues",
+            "OperatingIncomeLoss",
+            "NetIncomeLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic",
+            "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
+        ]
 
         # Count non-zero values for each report
         non_zero_count1 = sum(1 for metric in key_metrics if data1.get(metric, 0) != 0)
