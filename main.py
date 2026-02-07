@@ -78,9 +78,38 @@ def main():
     cash_flow_10k = helper.get_cash_flow_statement(symbol, limit=10, report_type="10-K")
     if cash_flow_10k:
         print(f"Found {len(cash_flow_10k)} 10-K reports.")
-        print(json.dumps(cash_flow_10k, indent=2))
+        print("Cash Flow Statement Data:")
+        for i, report in enumerate(cash_flow_10k):
+            print(f"\nReport {i+1}:")
+            print(f"  Fiscal Year: {report.get('fiscalYear')}")
+            print(f"  End Date: {report.get('endDate')}")
+            print(f"  Net Income: {report.get('netIncome', 'NOT FOUND')}")
+            print(
+                f"  Operating Cash Flow: {report.get('operatingCashFlow', 'NOT FOUND')}"
+            )
+            print(f"  Free Cash Flow: {report.get('freeCashFlow', 'NOT FOUND')}")
     else:
         print(f"No 10-K cash flow statement data found for {symbol}")
+
+    # --- Income Statement 10-K Only ---
+    print(f"\n--- Getting Income Statement for {symbol} (10-K, limit 5) ---")
+    income_statement_10k = helper.get_income_statement(
+        symbol, limit=5, report_type="10-K"
+    )
+    if income_statement_10k:
+        print(f"Found {len(income_statement_10k)} 10-K reports.")
+        print("Income Statement Data:")
+        for i, report in enumerate(income_statement_10k):
+            print(f"\nReport {i+1}:")
+            print(f"  Fiscal Year: {report.get('fiscalYear')}")
+            print(f"  End Date: {report.get('endDate')}")
+            print(f"  Revenue: {report.get('revenue', 'NOT FOUND')}")
+            print(f"  Net Income: {report.get('netIncome', 'NOT FOUND')}")
+            print(f"  Operating Income: {report.get('operatingIncome', 'NOT FOUND')}")
+            print(f"  Gross Profit: {report.get('grossProfit', 'NOT FOUND')}")
+            print(f"  EPS: {report.get('eps', 'NOT FOUND')}")
+    else:
+        print(f"No 10-K income statement data found for {symbol}")
 
     # --- Income Statement 10-Q Only ---
     print(f"\n--- Getting Income Statement for {symbol} (10-Q, limit 1) ---")
