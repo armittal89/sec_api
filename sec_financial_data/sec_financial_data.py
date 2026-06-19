@@ -179,6 +179,8 @@ TAG_MAPPINGS = {
     ],
     "capex": [
         "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+        "PaymentsToAcquireOtherProductiveAssets",
         "PurchaseOfPropertyPlantAndEquipment",  # IFRS
     ],
 }
@@ -238,7 +240,9 @@ KEY_ITEMS = {
 }
 
 
-def _get_value_from_tags(data_dict: Dict[str, Any], tags: List[str], default: Any = 0) -> Any:
+def _get_value_from_tags(
+    data_dict: Dict[str, Any], tags: List[str], default: Any = 0
+) -> Any:
     """
     Retrieves a financial value by trying multiple tags in order.
 
@@ -261,7 +265,9 @@ def _get_value_from_tags(data_dict: Dict[str, Any], tags: List[str], default: An
     return default
 
 
-def _get_first_available_value(data_dict: Dict[str, Any], tags: List[str], default: Any = 0) -> Any:
+def _get_first_available_value(
+    data_dict: Dict[str, Any], tags: List[str], default: Any = 0
+) -> Any:
     """
     Retrieves the first available value from tags (allows zero values).
 
@@ -741,10 +747,14 @@ def _get_financial_statement_data(
             "PaymentsForPurchasesOfInvestments",
             "PaymentsForRepurchaseOfCommonStock",
             "PaymentsForRepurchaseOfPreferredStock",
+            "PaymentsOfDividends",
+            "PaymentsOfOrdinaryDividends",
             "PaymentsOfDividendsCommonStock",
             "PaymentsOfDividendsPreferredStock",
             "PaymentsToAcquireBusinessesNetOfCashAcquired",
             "PaymentsToAcquirePropertyPlantAndEquipment",
+            "PaymentsToAcquireProductiveAssets",
+            "PaymentsToAcquireOtherProductiveAssets",
             "ProceedsFromIssuanceOfCommonStock",
             "ProceedsFromIssuanceOfLongTermDebt",
             "ProceedsFromIssuanceOfPreferredStock",
@@ -963,12 +973,18 @@ def _get_financial_statement_data(
         using_ifrs = True
         taxonomy_facts = ifrs_facts
         required_tags = statement_tags_ifrs[statement_type]
-        logger.info(f"[DEBUG] Using IFRS taxonomy for {symbol_or_cik} (no US GAAP data available)")
+        logger.info(
+            f"[DEBUG] Using IFRS taxonomy for {symbol_or_cik} (no US GAAP data available)"
+        )
     elif us_gaap_facts and ifrs_facts:
         # Both taxonomies present - prefer US GAAP but log the situation
-        logger.info(f"[DEBUG] Both US GAAP and IFRS taxonomies present for {symbol_or_cik}, using US GAAP")
+        logger.info(
+            f"[DEBUG] Both US GAAP and IFRS taxonomies present for {symbol_or_cik}, using US GAAP"
+        )
     elif not us_gaap_facts and not ifrs_facts:
-        logger.warning(f"[DEBUG] No US GAAP or IFRS facts available for {symbol_or_cik}")
+        logger.warning(
+            f"[DEBUG] No US GAAP or IFRS facts available for {symbol_or_cik}"
+        )
         return []
 
     # Step 2: Collect data for each unique report instance (filing).
@@ -1225,10 +1241,14 @@ def _get_financial_statement_data(
     for end_date, reports in reports_by_end_date.items():
         # Include both US domestic forms (10-K, 10-Q) and foreign private issuer forms (20-F, 6-K)
         originals = [
-            r for r in reports if r.get("formType", "").upper() in ("10-K", "10-Q", "20-F", "6-K")
+            r
+            for r in reports
+            if r.get("formType", "").upper() in ("10-K", "10-Q", "20-F", "6-K")
         ]
         amendments = [
-            r for r in reports if r.get("formType", "").upper() in ("10-K/A", "10-Q/A", "20-F/A", "6-K/A")
+            r
+            for r in reports
+            if r.get("formType", "").upper() in ("10-K/A", "10-Q/A", "20-F/A", "6-K/A")
         ]
         if originals:
             originals.sort(key=lambda r: r.get("filedAt", ""), reverse=True)
@@ -1317,7 +1337,9 @@ def _get_financial_statement_data(
         revenue = _get_value_from_tags(data, TAG_MAPPINGS["revenue"], default=0)
 
         # Cost of Revenue: Use centralized TAG_MAPPINGS
-        costOfRevenue = _get_value_from_tags(data, TAG_MAPPINGS["costOfRevenue"], default=0)
+        costOfRevenue = _get_value_from_tags(
+            data, TAG_MAPPINGS["costOfRevenue"], default=0
+        )
 
         # GrossProfit can be explicitly found or calculated.
         # If GrossProfit tag exists and is non-zero, use it. Otherwise,
@@ -1341,9 +1363,13 @@ def _get_financial_statement_data(
         otherOperatingExpenses_val = get_val("OtherOperatingExpenses")
         # IFRS tags (if US GAAP tags not found)
         if researchAndDevelopmentExpense == 0:
-            researchAndDevelopmentExpense = get_val("ResearchAndDevelopmentExpense")  # Same in IFRS
+            researchAndDevelopmentExpense = get_val(
+                "ResearchAndDevelopmentExpense"
+            )  # Same in IFRS
         if sga_combined == 0:
-            sga_combined = get_val("SellingGeneralAndAdministrativeExpense")  # Same in IFRS
+            sga_combined = get_val(
+                "SellingGeneralAndAdministrativeExpense"
+            )  # Same in IFRS
         if ga_separate == 0:
             ga_separate = get_val("AdministrativeExpense")  # IFRS alternative
         if sm_separate == 0:
@@ -1351,7 +1377,9 @@ def _get_financial_statement_data(
             if sm_separate == 0:
                 sm_separate = get_val("DistributionCosts")  # IFRS alternative
         if otherOperatingExpenses_val == 0:
-            otherOperatingExpenses_val = get_val("OtherExpenseByFunction")  # IFRS alternative
+            otherOperatingExpenses_val = get_val(
+                "OtherExpenseByFunction"
+            )  # IFRS alternative
 
         if ga_separate != 0 or sm_separate != 0:  # Prefer separate tags if available
             generalAndAdministrativeExpenses = ga_separate
@@ -1384,8 +1412,12 @@ def _get_financial_statement_data(
 
         # Interest Income / Expense: Use centralized TAG_MAPPINGS
         # Prioritize discrete InterestIncome and InterestExpense. Fallback to InterestIncomeExpenseNet.
-        interestIncome_val = _get_value_from_tags(data, TAG_MAPPINGS["interestIncome"], default=0)
-        interestExpense_val = _get_value_from_tags(data, TAG_MAPPINGS["interestExpense"], default=0)
+        interestIncome_val = _get_value_from_tags(
+            data, TAG_MAPPINGS["interestIncome"], default=0
+        )
+        interestExpense_val = _get_value_from_tags(
+            data, TAG_MAPPINGS["interestExpense"], default=0
+        )
         interestIncomeExpenseNet_val = get_val("InterestIncomeExpenseNet")
         if interestIncomeExpenseNet_val == 0:
             interestIncomeExpenseNet_val = get_val("NetFinanceIncome")
@@ -1405,13 +1437,19 @@ def _get_financial_statement_data(
         netInterestIncome = interestIncome_val - interestExpense_val  # Derived
 
         # Depreciation and Amortization: Use centralized TAG_MAPPINGS
-        depreciationAndAmortization = _get_value_from_tags(data, TAG_MAPPINGS["depreciation"], default=0)
+        depreciationAndAmortization = _get_value_from_tags(
+            data, TAG_MAPPINGS["depreciation"], default=0
+        )
         # Additional IFRS fallback for sum of depreciation and amortization
         if depreciationAndAmortization == 0:
-            depreciationAndAmortization = get_val("AdjustmentsForDepreciationExpense") + get_val("AdjustmentsForAmortisationExpense")
+            depreciationAndAmortization = get_val(
+                "AdjustmentsForDepreciationExpense"
+            ) + get_val("AdjustmentsForAmortisationExpense")
 
         # Operating Income: Use centralized TAG_MAPPINGS
-        operatingIncome = _get_value_from_tags(data, TAG_MAPPINGS["operatingIncome"], default=0)
+        operatingIncome = _get_value_from_tags(
+            data, TAG_MAPPINGS["operatingIncome"], default=0
+        )
 
         # If operatingIncome is zero from tag, try alternative methods
         if operatingIncome == 0:
@@ -1472,7 +1510,9 @@ def _get_financial_statement_data(
         totalOtherIncomeExpensesNet = get_val("NonoperatingIncomeLoss")
 
         # Income Before Tax: Use centralized TAG_MAPPINGS
-        incomeBeforeTax = _get_value_from_tags(data, TAG_MAPPINGS["incomeBeforeTax"], default=0)
+        incomeBeforeTax = _get_value_from_tags(
+            data, TAG_MAPPINGS["incomeBeforeTax"], default=0
+        )
         # Fallback calculation for Income Before Tax (EBT)
         if incomeBeforeTax == 0 and operatingIncome != 0:
             incomeBeforeTax = (
@@ -1480,10 +1520,14 @@ def _get_financial_statement_data(
             )  # Common derivation
 
         # Income Tax Expense: Use centralized TAG_MAPPINGS
-        incomeTaxExpense = _get_value_from_tags(data, TAG_MAPPINGS["incomeTax"], default=0)
+        incomeTaxExpense = _get_value_from_tags(
+            data, TAG_MAPPINGS["incomeTax"], default=0
+        )
         # Additional IFRS fallback for sum of current and deferred tax
         if incomeTaxExpense == 0:
-            incomeTaxExpense = get_val("CurrentTaxExpenseIncome") + get_val("DeferredTaxExpenseIncome")
+            incomeTaxExpense = get_val("CurrentTaxExpenseIncome") + get_val(
+                "DeferredTaxExpenseIncome"
+            )
 
         # Net Income: Use centralized TAG_MAPPINGS
         netIncome = _get_value_from_tags(data, TAG_MAPPINGS["netIncome"], default=0)
@@ -1500,8 +1544,12 @@ def _get_financial_statement_data(
         epsDiluted = _get_value_from_tags(data, TAG_MAPPINGS["epsDiluted"], default=0)
 
         # Weighted Average Shares: Use centralized TAG_MAPPINGS
-        weightedAverageShsOut = _get_value_from_tags(data, TAG_MAPPINGS["sharesOutstanding"], default=0)
-        weightedAverageShsOutDil = _get_value_from_tags(data, TAG_MAPPINGS["sharesOutstandingDiluted"], default=0)
+        weightedAverageShsOut = _get_value_from_tags(
+            data, TAG_MAPPINGS["sharesOutstanding"], default=0
+        )
+        weightedAverageShsOutDil = _get_value_from_tags(
+            data, TAG_MAPPINGS["sharesOutstandingDiluted"], default=0
+        )
 
         # Base item structure common to all statement types
         base_item = {
@@ -1559,7 +1607,9 @@ def _get_financial_statement_data(
 
             # ASSETS
             # Current Assets - Cash: Use centralized TAG_MAPPINGS
-            cashAndCashEquivalents = _get_value_from_tags(data, TAG_MAPPINGS["cash"], default=0)
+            cashAndCashEquivalents = _get_value_from_tags(
+                data, TAG_MAPPINGS["cash"], default=0
+            )
 
             shortTermInvestments = get_val(
                 "MarketableSecuritiesCurrent",
@@ -2228,6 +2278,8 @@ def _get_financial_statement_data(
             commonDividendsPaid_cf = get_val(
                 "PaymentsOfDividendsCommonStock",
                 alternate_tags=[
+                    "PaymentsOfDividends",
+                    "PaymentsOfOrdinaryDividends",
                     "DividendsPaid",  # IFRS
                 ],
             )  # Typically negative
