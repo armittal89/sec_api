@@ -1,6 +1,5 @@
 import requests
 import time
-from functools import lru_cache
 from collections import defaultdict
 import copy
 import re
@@ -303,18 +302,41 @@ def _rate_limit():
     LAST_REQUEST_TIME = time.time()
 
 
-@lru_cache(maxsize=1)
-def _fetch_and_cache_cik_map(headers_tuple):
+# Manual TTL cache (not lru_cache) keyed by headers_tuple: a long-running process
+# that hits this once via lru_cache would permanently keep whatever it got back
+# for its entire lifetime - including an empty/incomplete map from a transient
+# fetch failure or a truncated response, with no way to recover short of a
+# restart. Refreshing after CIK_MAP_TTL_SECONDS, and letting callers force a
+# refresh on a lookup miss, bounds how long a bad map can silently persist.
+CIK_MAP_TTL_SECONDS = 24 * 60 * 60
+_cik_map_cache = {}  # headers_tuple -> {"map": dict, "fetched_at": float}
+
+
+def _fetch_and_cache_cik_map(headers_tuple, force_refresh=False):
     """
     Fetches and caches the company ticker to CIK mapping from SEC.gov.
     The CIKs are padded with leading zeros to 10 digits as required by some SEC APIs.
-    This function is cached based on the headers_tuple to allow different User-Agents
-    to have potentially different cache entries if needed, though typically it's one map.
+    Cached per headers_tuple (different User-Agents could see different maps,
+    though typically it's one map) with a TTL, not indefinitely.
+
+    Args:
+        force_refresh (bool): Bypass the cache and re-fetch even if a cached
+            entry is still within its TTL - used to recover from a map that's
+            missing a symbol that genuinely exists on SEC.gov.
 
     Returns:
         dict: A dictionary where keys are uppercase ticker symbols and values
-              are 10-digit CIK strings. Returns an empty dict on error.
+              are 10-digit CIK strings. Returns the last-known-good map (or an
+              empty dict if none) on fetch error, rather than caching the error.
     """
+    cached = _cik_map_cache.get(headers_tuple)
+    if (
+        not force_refresh
+        and cached
+        and (time.time() - cached["fetched_at"]) < CIK_MAP_TTL_SECONDS
+    ):
+        return cached["map"]
+
     _rate_limit()
     headers = dict(headers_tuple)  # Convert back from tuple for requests
     url = f"{SEC_BASE_URL}/files/company_tickers.json"
@@ -329,12 +351,16 @@ def _fetch_and_cache_cik_map(headers_tuple):
             item["ticker"].upper(): str(item["cik_str"]).zfill(10)
             for item in data.values()
         }
+        _cik_map_cache[headers_tuple] = {"map": cik_map, "fetched_at": time.time()}
         return cik_map
     except requests.exceptions.RequestException as e:
         print(
             f"Error fetching CIK map with User-Agent '{headers.get('User-Agent')}': {e}"
         )
-        return {}
+        # Keep serving the last-known-good map (still better than nothing) and
+        # don't refresh fetched_at, so the next call retries instead of being
+        # stuck on this failure for a full TTL window.
+        return cached["map"] if cached else {}
 
 
 def _get_cik_from_map(symbol, cik_map):
@@ -688,6 +714,8 @@ def _get_financial_statement_data(
             "LongTermInvestments",
             "MarketableSecuritiesCurrent",
             "MarketableSecuritiesNoncurrent",
+            "AvailableForSaleSecuritiesCurrent",
+            "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent",
             "MinorityInterest",
             "NoncontrollingInterest",
             "NotesPayableCurrent",
@@ -1617,6 +1645,7 @@ def _get_financial_statement_data(
                     "ShortTermInvestments",
                     "AvailableForSaleSecuritiesCurrent",
                     "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost",
+                    "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent",
                     "CurrentFinancialAssets",  # IFRS
                     "OtherFinancialAssets",  # IFRS
                 ],
@@ -2428,10 +2457,10 @@ class SECHelper:
         print(f"SECHelper initialized. Using User-Agent: {self.user_agent}")
         self._latest_split_cache = {}
 
-    def _get_cik_map(self):
+    def _get_cik_map(self, force_refresh=False):
         # Make headers hashable for the cache key
         headers_tuple = tuple(sorted(self.headers.items()))
-        return _fetch_and_cache_cik_map(headers_tuple)
+        return _fetch_and_cache_cik_map(headers_tuple, force_refresh=force_refresh)
 
     def get_cik_for_symbol(self, symbol):
         """
@@ -2444,6 +2473,15 @@ class SECHelper:
             str: The 10-digit CIK as a string, or None if not found.
         """
         cik_map = self._get_cik_map()
+        cik = _get_cik_from_map(symbol, cik_map)
+        if cik is not None:
+            return cik
+
+        # A miss could mean the symbol genuinely doesn't exist on SEC.gov, or
+        # it could mean the cached map was stale/incomplete when we fetched
+        # it (e.g. a truncated response on first load). Force one fresh
+        # refetch before concluding the symbol really isn't there.
+        cik_map = self._get_cik_map(force_refresh=True)
         return _get_cik_from_map(symbol, cik_map)
 
     def get_company_all_facts(self, symbol_or_cik):
