@@ -35,11 +35,22 @@ logger.setLevel(logging.INFO)
 # Tag mappings with primary (US GAAP) and alternate (IFRS) tags
 # Format: {output_field: [primary_tag, *alternate_tags]}
 TAG_MAPPINGS = {
-    # Revenue tags
+    # Revenue tags - the ASC 606 contract-revenue tags come first, ahead of
+    # the older, generic `Revenues` tag. Confirmed for BlackRock: `Revenues`
+    # reports only $11.01B (one revenue line item) while
+    # `RevenueFromContractWithCustomerExcludingAssessedTax` reports the
+    # real $17.86B consolidated total for the same FY2023 period - for
+    # multi-revenue-stream companies (financial services especially),
+    # `Revenues` can silently hold a partial figure instead of the total.
+    # The same reordering also produces a far more plausible total for
+    # GIS's previously-corrupted years (~$20B vs `Revenues`'s $2.04B,
+    # which turned out to be a segment-level fact).
     "revenue": [
-        "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "Revenues",
+        "RevenuesExcludingInterestAndDividends",  # pre-ASC-606 fallback -
+        # see the allow-list comment above for why this is needed at all.
         "SalesRevenueNet",
         "SalesRevenueGoodsNet",
         "SalesRevenueServicesNet",
@@ -180,6 +191,13 @@ TAG_MAPPINGS = {
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquireProductiveAssets",
         "PaymentsToAcquireOtherProductiveAssets",
+        "CapitalizedComputerSoftwareAdditions",  # e.g. Lyft - no PP&E-style
+        # capex tag at all, reports capitalized internally-developed
+        # software as its only capex-equivalent line item. Without this,
+        # _get_value_from_tags falls through to its `default=0`, which
+        # then silently zeroes both capitalExpenditure and freeCashFlow
+        # (freeCashFlow = operatingCashFlow - capex, so freeCashFlow
+        # trivially equals operatingCashFlow instead of being computed).
         "PurchaseOfPropertyPlantAndEquipment",  # IFRS
     ],
 }
@@ -515,6 +533,29 @@ def _get_financial_statement_data(
     This function aims to provide a simplified, JSON structure for
     common financial statements.
 
+    KNOWN LIMITATION - dimensional/segment-only facts (e.g. Berkshire
+    Hathaway): `get_company_facts_func` returns SEC's companyfacts JSON API
+    response, which only exposes the default, non-dimensioned context for
+    each concept/period. Some filers report certain concepts ONLY as
+    dimensioned facts (e.g. broken out per business segment via
+    `StatementBusinessSegmentsAxis`), with no consolidated, non-dimensioned
+    total anywhere in their XBRL - confirmed for Berkshire Hathaway (CIK
+    0001067983): `PropertyPlantAndEquipmentNet` and "Short-term investments
+    in U.S. Treasury Bills" both 404 on the companyconcept API entirely,
+    with the real consolidated figures ($216.6B PP&E, $321.4B Treasury
+    bills as of FY2025) only recoverable by summing the "Insurance and
+    Other" + "Railroad, Utilities and Energy" segment members from the
+    filing's rendered R-report HTML (or the raw XBRL instance document's
+    `<xbrli:context>` dimensions) - neither of which this function reads.
+    Also confirmed for Berkshire: no current/non-current balance-sheet
+    split exists in its XBRL at all (unclassified, insurance-industry-style
+    presentation) - `totalCurrentLiabilities`/`totalCurrentAssets` coming
+    back as 0 for such a filer means "not applicable", not "missing tag".
+    Fixing this generally would require a genuinely different extraction
+    path (dimensional-context parsing), not another TAG_MAPPINGS entry -
+    out of scope for now; documented here so it isn't re-derived from
+    scratch next time a heavily-segmented conglomerate surfaces this.
+
     Args:
         symbol (str): The stock ticker symbol (e.g., "AAPL").
         statement_type (str): Type of statement ("income_statement",
@@ -645,6 +686,13 @@ def _get_financial_statement_data(
             "RevenueRemainingPerformanceObligation",
             "RevenueRemainingPerformanceObligationPercentage",
             "Revenues",
+            "RevenuesExcludingInterestAndDividends",  # e.g. BlackRock's
+            # pre-ASC-606 (pre-2018) revenue tag - none of the ASC 606
+            # contract-revenue tags have a genuine same-year filing for
+            # BLK's FY2014-2017 (only later, restated/reclassified
+            # comparative figures under a different value), so this is
+            # needed to reach the real, originally-filed figures for
+            # those years at all.
             "RoyaltyIncomeNonoperating",
             "SalesRevenueGoodsNet",
             "SalesRevenueNet",
@@ -669,6 +717,9 @@ def _get_financial_statement_data(
             "AccruedLiabilitiesCurrent",
             "Assets",
             "AssetsCurrent",
+            "SeparateAccountAssets",  # asset managers/insurers - client
+            # assets consolidated onto the balance sheet under GAAP, not
+            # corporate operating capital.
             "AssetsNoncurrent",
             "CapitalLeaseObligationsCurrent",
             "CapitalLeaseObligationsNoncurrent",
@@ -783,6 +834,10 @@ def _get_financial_statement_data(
             "PaymentsToAcquirePropertyPlantAndEquipment",
             "PaymentsToAcquireProductiveAssets",
             "PaymentsToAcquireOtherProductiveAssets",
+            "CapitalizedComputerSoftwareAdditions",  # e.g. Lyft's only
+            # capex-equivalent tag - must be in this extraction allow-list
+            # too, or TAG_MAPPINGS["capex"] never sees it since it's never
+            # pulled from company_facts into `data` at all.
             "ProceedsFromIssuanceOfCommonStock",
             "ProceedsFromIssuanceOfLongTermDebt",
             "ProceedsFromIssuanceOfPreferredStock",
@@ -1808,6 +1863,18 @@ def _get_financial_statement_data(
             if totalAssets == 0:
                 totalAssets = totalCurrentAssets + totalNonCurrentAssets
 
+            # Separate account assets (asset managers/insurers, e.g.
+            # BlackRock) - client-owned assets from consolidated sponsored
+            # investment funds/VIEs that GAAP requires on the balance
+            # sheet, not corporate operating capital. Confirmed for
+            # BlackRock: $56B (2023) up to $161B (2014) of `Assets` is this,
+            # not the firm's own capital - callers computing an operating
+            # efficiency ratio (e.g. asset turnover) should exclude it the
+            # same way cash/investments already are, or a heavily
+            # VIE-consolidated balance sheet looks artificially
+            # capital-intensive.
+            separateAccountAssets = get_val("SeparateAccountAssets")
+
             # LIABILITIES
             # Current Liabilities
             accountPayables = get_val(
@@ -2077,6 +2144,7 @@ def _get_financial_statement_data(
                 "totalNonCurrentAssets": totalNonCurrentAssets,
                 "otherAssets": 0,  # Default
                 "totalAssets": totalAssets,
+                "separateAccountAssets": separateAccountAssets,
                 "totalPayables": totalPayables,  # Derived
                 "accountPayables": accountPayables,
                 "otherPayables": otherPayables,
