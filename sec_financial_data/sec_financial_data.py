@@ -1,6 +1,6 @@
 import requests
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 import copy
 import re
 from datetime import datetime, timedelta
@@ -203,6 +203,51 @@ TAG_MAPPINGS = {
 }
 
 # Key items for data completeness checking by statement type
+_FISCAL_YEAR_END_TOLERANCE_DAYS = 6
+# Number of most recent single-endDate fiscal-year buckets used to establish a
+# company's (endDate_year - fiscalYear) labeling convention in Step 6.05.
+_OFFSET_RECENT_BUCKETS = 5
+_MAX_FISCAL_LABEL_PASSES = 25
+
+
+def _parse_iso_date(date_str):
+    """Parse a 'YYYY-MM-DD' string to a date; return None if missing/malformed."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _fact_span_days(start_date, end_date):
+    """Length in days of a duration fact; 0 for instant facts or bad dates."""
+    start_d, end_d = _parse_iso_date(start_date), _parse_iso_date(end_date)
+    if start_d is None or end_d is None:
+        return 0
+    return (end_d - start_d).days
+
+
+def _count_nonzero_key_items(data, key_items):
+    """Count how many of `key_items` carry a non-zero value in `data`."""
+    return sum(1 for item in key_items if data.get(item, 0) != 0)
+
+
+def _circular_day_of_year_distance(month_day_1, month_day_2):
+    """
+    Circular distance in days between two 'MM-DD' strings, treating the year
+    as a 366-day cycle (so '12-31' and '01-02' are 2 days apart). Both are
+    mapped onto leap year 2000 so '02-29' is a well-defined neighbor of
+    '02-28'. Returns None if either input is unparseable.
+    """
+    days = []
+    for month_day in (month_day_1, month_day_2):
+        parsed = _parse_iso_date(f"2000-{month_day}")
+        if parsed is None:
+            return None
+        days.append(parsed.timetuple().tm_yday)
+    diff = abs(days[0] - days[1])
+    return min(diff, 366 - diff)
+
+
 KEY_ITEMS = {
     "income_statement": {
         "us_gaap": [
@@ -1151,23 +1196,50 @@ def _get_financial_statement_data(
                         "startDate": start_date,
                         "data": {},
                     }
+                elif start_date and (
+                    not report_instances_data[report_instance_key]["startDate"]
+                    or start_date
+                    < report_instances_data[report_instance_key]["startDate"]
+                ):
+                    # Widen startDate to the earliest (longest-span) start
+                    # seen for this report instance. A single filing can
+                    # disclose multiple facts that coincidentally share the
+                    # same (form_group, endDate, filedAt) - e.g. AXP's own
+                    # 10-K disclosing both a full-year NetIncomeLoss
+                    # (start=2014-01-01) and a Q4-only quarterly-footnote
+                    # NetIncomeLoss (start=2014-10-01) sharing the same
+                    # 2014-12-31 end date and filing date. Without this,
+                    # startDate locks to whichever fact's tag happened to
+                    # be processed first (dict/list iteration order over
+                    # SEC's raw JSON, not chronological) - confirmed for
+                    # AXP, CDNS, KMX, STZ, AZZ: locking to the shorter
+                    # Q4-only span made genuinely annual reports look like
+                    # ~90-day quarterly leaks to Step 3.1's duration
+                    # filter below, and they were wrongly dropped entirely
+                    # (AXP alone lost 7 consecutive years, 2014-2020).
+                    report_instances_data[report_instance_key][
+                        "startDate"
+                    ] = start_date
                 # Collect all values for this tag/period/form
-                values_by_key.setdefault(report_instance_key, []).append(value)
+                values_by_key.setdefault(report_instance_key, []).append(
+                    (_fact_span_days(start_date, end_date), value)
+                )
 
             # After collecting all values for this tag/unit, select the best one
             for report_instance_key, values in values_by_key.items():
                 data_dict = report_instances_data[report_instance_key]["data"]
                 if tag in eps_tags:
                     # EPS: pick the highest value
-                    max_val = max(values)
-                    data_dict[tag] = max_val
+                    data_dict[tag] = max(v for _, v in values)
                 elif tag in share_count_tags:
                     # Share count: pick the lowest value
-                    min_val = min(values)
-                    data_dict[tag] = min_val
+                    data_dict[tag] = min(v for _, v in values)
                 else:
-                    # Other tags: pick the first value
-                    data_dict[tag] = values[0]
+                    # Other tags: pick the value of the longest-span fact
+                    # (first seen wins ties, incl. all-instant facts). Keeps
+                    # a full-year figure from losing to a Q4-only footnote
+                    # fact that shares the same (form, endDate, filedAt).
+                    data_dict[tag] = max(values, key=lambda sv: sv[0])[1]
 
     # Step 2: Determine the canonical (latest filed) report for each (form_group, end_date)
     # If the latest report has insufficient data, fall back to the second most
@@ -1199,24 +1271,44 @@ def _get_financial_statement_data(
 
         # Check if the earliest report has sufficient data
         data = selected_report.get("data", {})
-        num_nonzero_items = sum(
-            1 for item in key_items_to_check if data.get(item, 0) != 0
+        has_sufficient_data = (
+            _count_nonzero_key_items(data, key_items_to_check) >= 2
         )
-        has_sufficient_data = num_nonzero_items >= 2
 
-        # If the earliest report has insufficient data, try subsequent reports
+        # If the earliest report has insufficient data, supplement it from a
+        # later report covering the same endDate - but keep the earliest
+        # report's OWN fiscalYear/fiscalPeriod/filedAt/formType metadata,
+        # only merging in the later report's `data`. Confirmed for LEN's
+        # FY2022 10-K: it disclosed consolidated Revenues only via a
+        # segment-dimensioned fact (invisible here - see this function's
+        # docstring), so this period's own report_instance had only
+        # NetIncomeLoss and needed the FY2023 10-K's prior-year comparative
+        # for Revenues. That comparative fact carries the FY2023 filing's OWN
+        # fy label ("2023"). Previously this loop replaced the WHOLE report
+        # object with the later one, so the recovered period displayed as
+        # "2023" (colliding with the real FY2023 report) instead of "2022" -
+        # merging data-only preserves the correct fiscal year label.
         if not has_sufficient_data and len(reports) > 1:
             for i in range(1, len(reports)):
                 candidate_report = reports[i]
                 candidate_data = candidate_report.get("data", {})
-                candidate_num_nonzero_items = sum(
-                    1 for item in key_items_to_check if candidate_data.get(item, 0) != 0
+                candidate_has_sufficient_data = (
+                    _count_nonzero_key_items(candidate_data, key_items_to_check) >= 2
                 )
-                candidate_has_sufficient_data = candidate_num_nonzero_items >= 2
 
-                # If this report has sufficient data, use it
+                # If this report has sufficient data, use it - merging its
+                # data under the earliest report's own metadata, with the
+                # earliest report's own (possibly sparse) data values
+                # winning over the candidate's for any tag both report.
                 if candidate_has_sufficient_data:
-                    selected_report = candidate_report
+                    merged_report = dict(reports[0])
+                    merged_data = dict(candidate_data)
+                    merged_data.update(data)
+                    merged_report["data"] = merged_data
+                    # Provenance: part of this report's data was borrowed
+                    # from a later filing's comparative disclosure.
+                    merged_report["dataSupplementedFrom"] = candidate_report["filedAt"]
+                    selected_report = merged_report
                     break
 
         canonical_reports[key] = selected_report
@@ -1246,10 +1338,8 @@ def _get_financial_statement_data(
         end = report.get("endDate")
         if not start or not end:
             return True
-        try:
-            start_d = datetime.strptime(start, "%Y-%m-%d").date()
-            end_d = datetime.strptime(end, "%Y-%m-%d").date()
-        except (TypeError, ValueError):
+        start_d, end_d = _parse_iso_date(start), _parse_iso_date(end)
+        if start_d is None or end_d is None:
             return True
         return (end_d - start_d).days >= 250
 
@@ -1270,8 +1360,6 @@ def _get_financial_statement_data(
     ten_k_end_dates = [r["endDate"] for r in ten_k_reports]
     # Extract month-day (e.g., '12-31')
     ten_k_month_days = [d[5:] for d in ten_k_end_dates if len(d) == 10]
-    from collections import Counter
-
     fiscal_year_end_md = None
     if ten_k_month_days:
         # Get the most common month-day pattern
@@ -1317,10 +1405,69 @@ def _get_financial_statement_data(
 
             fiscal_year_end_md = None
 
-    # Filter 10-Ks to only those matching fiscal year-end (if pattern is consistent)
+    # Filter 10-Ks to only those matching fiscal year-end (if pattern is
+    # consistent) - using a TOLERANT circular day-of-year distance, not an
+    # exact month-day string match. An exact match breaks for two confirmed,
+    # real fiscal-year-end shapes:
+    #   1. "Last day of February" (KMX/STZ/AZZ): the date is "02-28" in
+    #      non-leap years and "02-29" in leap years. Since "02-28" occurs
+    #      3x more often, it wins as the dominant pattern, and an exact
+    #      match then excludes every leap-year period (confirmed: KMX/STZ/
+    #      AZZ were each missing exactly 2012/2016/2020/2024, once every 4
+    #      years, matching the leap-year cycle precisely).
+    #   2. 52/53-week fiscal calendars anchored to a weekday (CDNS): the
+    #      nominal year-end date wobbles by a few days year to year (e.g.
+    #      "12-29", "12-28", "01-03", "12-30", "01-02") - none of these
+    #      exactly equal any single dominant string, so an exact match
+    #      excludes most of the company's real history.
+    # `_circular_day_of_year_distance` treats the ~365-day calendar as a
+    # cycle (so "12-31" and "01-02" are 2 days apart, not ~363) and maps
+    # both month-days onto a fixed leap year so "02-29" is a well-defined
+    # 1-day neighbor of "02-28" rather than an unparseable/missing case.
+    # A report admitted only via the TOLERANT (non-exact) path must also
+    # carry real data - confirmed for MSFT ("2016-07-01", 1 day off from
+    # the real "2016-06-30", totalAssets=$22.3B vs the real $193.7B) and
+    # BRK-B ("2021-01-01", 1 day off from "2020-12-31"/"2021-12-31",
+    # totalAssets=$0): both are garbage near-date instant facts (the same
+    # class as AVGO's confirmed 2016-02-01/2016-01-31 zero-value phantoms)
+    # that the OLD exact-month-day match coincidentally filtered out.
+    # Widening the date tolerance removed that accidental filter, so it is
+    # replaced by (a) the same >= 2 non-zero key-items threshold Step 2
+    # uses, and (b) dropping a tolerant match that sits within the tolerance
+    # window of an exact match (it is a ghost of that real period).
     if fiscal_year_end_md:
+
+        def _distance_to_year_end(report):
+            return _circular_day_of_year_distance(
+                report["endDate"][5:], fiscal_year_end_md
+            )
+
+        in_window = []
+        for report in ten_k_reports:
+            distance = _distance_to_year_end(report)
+            if distance is not None and distance <= _FISCAL_YEAR_END_TOLERANCE_DAYS:
+                in_window.append((report, distance))
+
+        exact_end_dates = [
+            _parse_iso_date(r["endDate"]) for r, d in in_window if d == 0
+        ]
+
+        def _is_ghost_of_exact_match(report):
+            end_d = _parse_iso_date(report["endDate"])
+            return end_d is not None and any(
+                exact is not None
+                and abs((end_d - exact).days) <= _FISCAL_YEAR_END_TOLERANCE_DAYS
+                for exact in exact_end_dates
+            )
+
         ten_k_reports = [
-            r for r in ten_k_reports if r["endDate"][5:] == fiscal_year_end_md
+            r
+            for r, distance in in_window
+            if distance == 0
+            or (
+                _count_nonzero_key_items(r.get("data", {}), key_items_to_check) >= 2
+                and not _is_ghost_of_exact_match(r)
+            )
         ]
 
     # Step 5: Select reports based on report_type and apply limit
@@ -1390,6 +1537,116 @@ def _get_financial_statement_data(
         # best["fiscalYear"] = best["endDate"][:4]  # This was incorrect for companies with non-calendar fiscal years
         deduped_reports.append(best)
 
+    # Step 6.05: Correct fiscalYear labels for 10-K reports that collide -
+    # multiple different endDates sharing one SEC-reported fiscalYear
+    # label. Confirmed for two distinct root causes:
+    #   1. FICO's own FY2020 10-K mislabels its OWN current-year fact with
+    #      fy="2019" in its raw XBRL (a genuine filer-side tagging mistake,
+    #      not a merge/fallback artifact) - colliding with the real,
+    #      correctly-labeled FY2019 report.
+    #   2. A recently-IPO'd/spun-off company's earliest 1-3 years only
+    #      exist as comparative disclosures inside its first-ever 10-K, so
+    #      they all inherit that filing's fy label (confirmed for AGL:
+    #      three genuinely different years of revenue - 2019/2020/2021 -
+    #      all labeled fiscalYear="2021"; same class as LYFT/AVGO/BRK's
+    #      earliest years, documented in this function's docstring).
+    # Both cases are display-label-only: the underlying `data` and
+    # `endDate` are correct; only `fiscalYear` is wrong. Fix by deriving
+    # each company's OWN established (endDate_year - fiscalYear) offset
+    # from its non-colliding reports, then reassigning the colliding
+    # reports' fiscalYear using that same offset - safer than blindly
+    # assuming fiscalYear == endDate's calendar year, which breaks for a
+    # company whose fiscal year-end falls early in the calendar year (e.g.
+    # a retailer with a January year-end, conventionally labeled by the
+    # PRIOR calendar year) - this derives the convention from the
+    # company's own other, unambiguous reports instead of assuming one.
+    # Runs BEFORE Step 6.1 so that step's own fiscalYear-based bucketing
+    # sees already-corrected labels; Step 6.1 remains as a safety net for
+    # a genuine fiscal-year-end change (two real, close-together endDates
+    # legitimately sharing one fy label), which this step does not touch
+    # (it only touches labels, never drops a report).
+    #
+    # Runs to a bounded fixed point (not just one pass): confirmed for KMX,
+    # whose OWN fy-labeling convention itself shifted across eras (an
+    # "offset=-1" era around 2009-2013, "offset=0" from 2014 on) - a single
+    # pass corrects the 2009-2011 bucket (which collided under its original
+    # mislabeled fy) to the majority offset, but that correction can newly
+    # collide with an ALREADY-processed, previously-uncontested bucket
+    # (2012-02-29, originally alone under fy="2011", now collides with the
+    # just-corrected 2011-02-28). Confirmed for STZ: a long (~9 year)
+    # consecutive streak on the old convention only resolves one year of
+    # the chain per pass, needing that many iterations to fully unwind -
+    # capped at 25 (a generous multiple of any real filer's history) since
+    # each pass strictly reduces remaining collisions and this is pure
+    # in-memory list/dict work over at most a few dozen periods.
+    if report_type_upper == "10-K":
+
+        def _end_year(report):
+            end_d = _parse_iso_date(report.get("endDate"))
+            return end_d.year if end_d is not None else None
+
+        ten_k_only = [r for r in deduped_reports if r["formGroup"] == "10-K"]
+        # Normalize to string up front - SEC's raw `fy` field is a JSON
+        # number (parsed as a Python int), but this step's own corrections
+        # write `str(...)`. Left mixed, a report corrected on one iteration
+        # (now a str) and an untouched report with the same fiscal year
+        # (still an int) would bucket as DIFFERENT dict keys next
+        # iteration ("2011" != 2011), silently hiding a real collision -
+        # confirmed for KMX, whose offset=-1-era entries only fully
+        # resolved once every entry's key was compared as the same type.
+        for report in ten_k_only:
+            report["fiscalYear"] = str(report["fiscalYear"])
+
+        for _iter in range(_MAX_FISCAL_LABEL_PASSES):
+            by_fiscal_year_for_offset = defaultdict(list)
+            for report in ten_k_only:
+                by_fiscal_year_for_offset[report["fiscalYear"]].append(report)
+
+            offsets = []  # (endDate, endDate_year - fiscalYear) per clean bucket
+            colliding_buckets = []
+            for fiscal_year, reports_for_year in by_fiscal_year_for_offset.items():
+                distinct_end_dates = {r["endDate"] for r in reports_for_year}
+                if len(distinct_end_dates) == 1:
+                    end_year = _end_year(reports_for_year[0])
+                    try:
+                        fiscal_year_int = int(fiscal_year)
+                    except (TypeError, ValueError):
+                        continue
+                    if end_year is not None:
+                        offsets.append(
+                            (reports_for_year[0]["endDate"], end_year - fiscal_year_int)
+                        )
+                else:
+                    colliding_buckets.append(reports_for_year)
+
+            if not offsets or not colliding_buckets:
+                break
+
+            # Weight toward the company's most recent labeling convention
+            # so a genuine older-era convention can't overwrite recent labels.
+            recent_offsets = [o for _, o in sorted(offsets, reverse=True)]
+            established_offset = Counter(
+                recent_offsets[:_OFFSET_RECENT_BUCKETS]
+            ).most_common(1)[0][0]
+            changed = False
+            for reports_for_year in colliding_buckets:
+                for report in reports_for_year:
+                    end_year = _end_year(report)
+                    if end_year is None:
+                        continue
+                    corrected = str(end_year - established_offset)
+                    if report["fiscalYear"] != corrected:
+                        report["fiscalYear"] = corrected
+                        changed = True
+
+            if not changed:
+                break
+        else:
+            logger.warning(
+                "Step 6.05 fiscalYear relabeling did not converge in %d passes",
+                _MAX_FISCAL_LABEL_PASSES,
+            )
+
     # Step 6.1: Additional deduplication for 10-K reports by fiscal year
     # For 10-K reports, we should only keep one report per fiscal year - but
     # only collapse two reports into one when their end dates are actually
@@ -1413,12 +1670,6 @@ def _get_financial_statement_data(
     if report_type_upper == "10-K":
         _MAX_GENUINE_FISCAL_YEAR_SHIFT_DAYS = 200
 
-        def _parse_end_date(end_date_str):
-            try:
-                return datetime.strptime(end_date_str, "%Y-%m-%d").date()
-            except (TypeError, ValueError):
-                return None
-
         reports_by_fiscal_year = defaultdict(list)
         for report in deduped_reports:
             if report["formGroup"] == "10-K":
@@ -1436,9 +1687,9 @@ def _get_financial_statement_data(
                 # Sort by end date (descending), then by filing date (descending)
                 reports.sort(key=lambda r: (r["endDate"], r["filedAt"]), reverse=True)
                 kept_reports = [reports[0]]
-                kept_end_date = _parse_end_date(reports[0]["endDate"])
+                kept_end_date = _parse_iso_date(reports[0]["endDate"])
                 for candidate in reports[1:]:
-                    candidate_end_date = _parse_end_date(candidate["endDate"])
+                    candidate_end_date = _parse_iso_date(candidate["endDate"])
                     if (
                         kept_end_date is not None
                         and candidate_end_date is not None
