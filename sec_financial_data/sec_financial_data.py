@@ -1227,6 +1227,34 @@ def _get_financial_statement_data(
     ten_k_reports = [r for r in all_canonical_reports_list if r["formGroup"] == "10-K"]
     ten_q_reports = [r for r in all_canonical_reports_list if r["formGroup"] == "10-Q"]
 
+    # Step 3.1: Drop 10-K-tagged "reports" that aren't actually annual-length
+    # periods. Confirmed for GIS: 10-Ks routinely embed a "Quarterly
+    # Financial Data (unaudited)" footnote disclosing individual quarters as
+    # prior-year comparatives, and those facts are tagged form="10-K" (the
+    # enclosing filing's form) even though they cover ~90 days, not a full
+    # year - e.g. RevenueFromContractWithCustomerExcludingAssessedTax for
+    # 2025-05-26/2025-08-24 ($4.52B, GIS's Q1 FY2026) shows up as its own
+    # form="10-K" report_instance. Left unfiltered, these masquerade as
+    # extra fiscal years. Only duration (start/end) facts are checked -
+    # balance-sheet instant facts have no startDate and pass through
+    # untouched. A genuine short "transition period" 10-K (fiscal year-end
+    # change) is rare but real, so the floor is generous (250 days, ~8
+    # months) - comfortably above a single quarter, comfortably below a
+    # true stub year.
+    def _is_plausible_annual_report(report):
+        start = report.get("startDate")
+        end = report.get("endDate")
+        if not start or not end:
+            return True
+        try:
+            start_d = datetime.strptime(start, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return True
+        return (end_d - start_d).days >= 250
+
+    ten_k_reports = [r for r in ten_k_reports if _is_plausible_annual_report(r)]
+
     # Step 4: Sort each list by endDate (primary) and filedAt (secondary, for
     # tie-breaking), most recent first
     def sort_key_func(r):
@@ -1363,29 +1391,75 @@ def _get_financial_statement_data(
         deduped_reports.append(best)
 
     # Step 6.1: Additional deduplication for 10-K reports by fiscal year
-    # For 10-K reports, we should only keep one report per fiscal year
+    # For 10-K reports, we should only keep one report per fiscal year - but
+    # only collapse two reports into one when their end dates are actually
+    # close together (a genuine short/stub period from a fiscal year-end
+    # change). SEC's `fiscalYear` (`fy`) field records which FILING disclosed
+    # a fact, not the fiscal year the fact describes. When a period's own
+    # 10-K lacks enough top-level tags for a statement type (e.g. Lennar's
+    # FY2022 10-K disclosed consolidated Revenues only via a
+    # segment-dimensioned fact, invisible to this flat-JSON extraction - see
+    # this function's docstring), Step 2's fallback-to-next-report logic
+    # correctly recovers the value from a LATER filing's prior-year
+    # comparative disclosure for that same endDate - but that comparative
+    # fact carries the LATER filing's fy label. Bucketing purely by fy then
+    # wrongly collided that period with the real report for the later fiscal
+    # year (a full ~365 days away) and silently dropped it - confirmed via
+    # real SEC EDGAR data for LEN's FY2022 (endDate 2022-11-30, mislabeled
+    # fiscalYear "2023") colliding with and losing to the genuine FY2023
+    # report (endDate 2023-11-30). Only treat same-fy reports as duplicates
+    # of each other when their end dates are within
+    # _MAX_GENUINE_FISCAL_YEAR_SHIFT_DAYS of each other.
     if report_type_upper == "10-K":
+        _MAX_GENUINE_FISCAL_YEAR_SHIFT_DAYS = 200
+
+        def _parse_end_date(end_date_str):
+            try:
+                return datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return None
+
         reports_by_fiscal_year = defaultdict(list)
         for report in deduped_reports:
             if report["formGroup"] == "10-K":
                 fiscal_year = report["fiscalYear"]
                 reports_by_fiscal_year[fiscal_year].append(report)
 
-        # For each fiscal year, keep the report with the latest end date
-        # If multiple reports have the same end date, keep the one with the latest filing date
+        # For each fiscal year, keep the report with the latest end date.
+        # Only discard another report sharing that fiscal year label if its
+        # end date is genuinely close to the kept one - otherwise it's a
+        # different real period whose fy label was inherited from a later
+        # filing's comparative disclosure, and must be kept.
         final_deduped_reports = []
         for fiscal_year, reports in reports_by_fiscal_year.items():
             if len(reports) > 1:
                 # Sort by end date (descending), then by filing date (descending)
                 reports.sort(key=lambda r: (r["endDate"], r["filedAt"]), reverse=True)
-
-            final_deduped_reports.append(reports[0])
+                kept_reports = [reports[0]]
+                kept_end_date = _parse_end_date(reports[0]["endDate"])
+                for candidate in reports[1:]:
+                    candidate_end_date = _parse_end_date(candidate["endDate"])
+                    if (
+                        kept_end_date is not None
+                        and candidate_end_date is not None
+                        and abs((kept_end_date - candidate_end_date).days)
+                        <= _MAX_GENUINE_FISCAL_YEAR_SHIFT_DAYS
+                    ):
+                        continue
+                    kept_reports.append(candidate)
+                final_deduped_reports.extend(kept_reports)
+            else:
+                final_deduped_reports.append(reports[0])
 
         # Add any non-10-K reports (shouldn't happen with report_type="10-K", but just in case)
         for report in deduped_reports:
             if report["formGroup"] != "10-K":
                 final_deduped_reports.append(report)
 
+        # Restore chronological order (descending by end date, then filed
+        # date) - bucketing by fiscal year above can interleave groups out
+        # of the order `deduped_reports` was in.
+        final_deduped_reports.sort(key=sort_key_func, reverse=True)
         deduped_reports = final_deduped_reports
 
     # Step 7: Apply the limit to the deduplicated, patched reports
