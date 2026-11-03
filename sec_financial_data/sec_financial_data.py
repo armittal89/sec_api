@@ -77,6 +77,9 @@ TAG_MAPPINGS = {
     ],
     # Income Before Tax tags
     "incomeBeforeTax": [
+        # The standard US GAAP pre-tax total (GOOGL, most filers).
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
         "IncomeLossFromContinuingOperationsBeforeIncomeTax",
         "IncomeBeforeIncomeTax",
         "IncomeBeforeTax",
@@ -111,8 +114,11 @@ TAG_MAPPINGS = {
     # Depreciation tags
     "depreciation": [
         "DepreciationDepletionAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+        "DepreciationAndAmortization",
         "DepreciationAndAmortisationExpense",  # IFRS
-        "AdjustmentsForDepreciationExpense",  # IFRS
+        # IFRS AdjustmentsForDepreciationExpense is summed with amortisation
+        # in _get_depreciation_value, so it is not listed here.
     ],
     # Interest tags
     "interestIncome": [
@@ -214,12 +220,178 @@ def _parse_iso_date(date_str):
         return None
 
 
+# Shortest duration accepted as a fiscal year: above a quarter, below a stub year.
+_MIN_ANNUAL_SPAN_DAYS = 250
+
+
+# A real Q4 reaches this share of the prior year only at a ~2.4x annualized
+# growth run rate; rare but real (NVDA Q4 FY2025 was 65% of FY2024).
+_MISDATED_ANNUAL_MIN_RATIO = 0.6
+
+# Parent's share first, to pair with NetIncomeLoss.
+_DISCONTINUED_OPERATIONS_TAGS = [
+    "IncomeLossFromDiscontinuedOperationsNetOfTaxAttributableToReportingEntity",
+    "IncomeLossFromDiscontinuedOperationsNetOfTax",
+    "NetIncomeLossFromDiscontinuedOperationsNetOfTax",
+]
+
+
+def _annual_fact_values(values, prior_year_value=None):
+    """Drops sub-annual duration facts from a 10-K report's (span, value) list.
+
+    `prior_year_value` (stable tags only) keeps a short-span fact that is
+    really annual: LHX's FY2025 revenue is dated from the Q4 start.
+    """
+    if all(span == 0 for span, _ in values):
+        return values  # instant (balance-sheet) facts
+    annual = [sv for sv in values if sv[0] >= _MIN_ANNUAL_SPAN_DAYS]
+    if annual or not prior_year_value or prior_year_value <= 0:
+        return annual
+    return [
+        sv
+        for sv in values
+        if sv[1] > 0 and sv[1] >= _MISDATED_ANNUAL_MIN_RATIO * prior_year_value
+    ]
+
+
+# Refilled from a later 10-K's comparative when the original 10-K tagged them
+# only for Q4 (MPC FY2016 revenue). Per-share and share counts are left out: a
+# later filing may be post-split.
+_COMPARATIVE_FILL_GROUPS = (
+    "revenue",
+    "costOfRevenue",
+    "operatingIncome",
+    "incomeBeforeTax",
+    "incomeTax",
+    "netIncome",
+)
+
+
+def _tag_groups(tag):
+    """The TAG_MAPPINGS groups that list `tag`."""
+    return [group for group in TAG_MAPPINGS.values() if tag in group]
+
+
+def _tag_group_peers(tag):
+    """`tag` plus every tag sharing a TAG_MAPPINGS group with it."""
+    return {tag}.union(*_tag_groups(tag))
+
+
+def _merge_missing_groups(data, later_reports, skip_tags):
+    """`data` plus later reports' TAG_MAPPINGS groups it has no value for, earliest first.
+
+    Only grouped tags are borrowed, and never into a group the original
+    already reports, so a later filing can't shift a value derived from the
+    original's components (MSFT FY2015 operating cash flow). `skip_tags`
+    (per-share, share counts: a later filing may be post-split) are never
+    borrowed.
+    """
+    merged = dict(data)
+    for later in later_reports:
+        for tag, value in later.get("data", {}).items():
+            if not value or tag in skip_tags:
+                continue
+            groups = _tag_groups(tag)
+            if not groups:
+                continue
+            peers = {tag}.union(*groups)
+            if tag in TAG_MAPPINGS["depreciation"]:
+                # INTC 2015 sums the components into 8.7B of D&A.
+                peers |= _DEPRECIATION_COMPONENT_TAGS
+            if any(merged.get(t) for t in peers):
+                continue
+            merged[tag] = value
+    return merged
+
+
+def _fill_short_span_groups(report, later_reports, short_span_tags):
+    """Fills tag groups `report` had only sub-annual facts for from a later 10-K."""
+    if not short_span_tags:
+        return report
+    data = report["data"]
+    filled, source = {}, None
+    for group in _COMPARATIVE_FILL_GROUPS:
+        tags = TAG_MAPPINGS[group]
+        if short_span_tags.isdisjoint(tags) or any(data.get(t) for t in tags):
+            continue
+        for later in later_reports:
+            values = {t: later["data"][t] for t in tags if later["data"].get(t)}
+            if values:
+                filled.update(values)
+                source = source or later["filedAt"]
+                break
+    if not filled:
+        return report
+    merged = dict(report)
+    merged["data"] = {**data, **filled}
+    merged.setdefault("dataSupplementedFrom", source)
+    return merged
+
+
+def _prior_year_value(annual_values_by_end, end_date):
+    """The annual value ending 300-430 days before `end_date`, if any."""
+    end_d = _parse_iso_date(end_date)
+    if end_d is None:
+        return None
+    for prior_end, value in annual_values_by_end.items():
+        prior_d = _parse_iso_date(prior_end)
+        if prior_d is not None and 300 <= (end_d - prior_d).days <= 430:
+            return value
+    return None
+
+
 def _fact_span_days(start_date, end_date):
     """Length in days of a duration fact; 0 for instant facts or bad dates."""
     start_d, end_d = _parse_iso_date(start_date), _parse_iso_date(end_date)
     if start_d is None or end_d is None:
         return 0
     return (end_d - start_d).days
+
+
+# Quarter lengths in 52/53-week and calendar fiscal years (13 or 14 weeks).
+_MIN_QUARTER_SPAN_DAYS = 75
+_MAX_QUARTER_SPAN_DAYS = 105
+
+
+def _sum_fiscal_year_quarters(quarters, start_date, end_date):
+    """Sum of four back-to-back quarterly facts spanning exactly start..end, else None."""
+    by_end = {end: (start, value) for start, end, value in quarters}
+    total, cursor, start = 0, end_date, None
+    for _ in range(4):
+        if cursor not in by_end:
+            return None
+        start, value = by_end[cursor]
+        total += value
+        cursor = (_parse_iso_date(start) - timedelta(days=1)).isoformat()
+    return total if start == start_date else None
+
+
+def _fill_from_quarter_sums(report, quarter_facts, fiscal_year_starts):
+    """Fills tags `report` still lacks from the four quarters its own 10-K tagged.
+
+    AAPL's FY2012 10-K tags dividends paid, and GIS's 10-Ks gross profit, only
+    in the quarterly footnote. Runs after the later-filing fills so that a
+    sparse report still borrows the later annual figures (NEM revenue), and
+    skips a tag whose TAG_MAPPINGS group already has a value, so a summed
+    sub-line can't compete with a reported total (GE contract revenue).
+    The quarters must span a fiscal year the filing reports, not a trailing
+    twelve months ending mid-year (BBY).
+    """
+    data = report["data"]
+    filled = {}
+    for tag, quarters in quarter_facts.items():
+        if any(data.get(t) for t in _tag_group_peers(tag)):
+            continue
+        for start in fiscal_year_starts:
+            total = _sum_fiscal_year_quarters(quarters, start, report["endDate"])
+            if total is not None:
+                filled[tag] = total
+                break
+    if not filled:
+        return report
+    merged = dict(report)
+    merged["data"] = {**data, **filled}
+    return merged
 
 
 def _count_nonzero_key_items(data, key_items):
@@ -297,6 +469,20 @@ KEY_ITEMS = {
     },
 }
 
+# Tags that make a duration report a real period rather than footnote-only
+# facts; broader than KEY_ITEMS (FOXA has no `Revenues`/`NetIncomeLoss`).
+_PERIOD_DEFINING_TAGS = {
+    statement_type: frozenset(
+        tag
+        for taxonomy_tags in KEY_ITEMS[statement_type].values()
+        for tag in taxonomy_tags
+    ).union(*(TAG_MAPPINGS[name] for name in mapping_names))
+    for statement_type, mapping_names in (
+        ("income_statement", ("revenue", "netIncome", "operatingIncome")),
+        ("cash_flow", ("operatingCashFlow", "netIncome")),
+    )
+}
+
 
 def _get_value_from_tags(
     data_dict: Dict[str, Any], tags: List[str], default: Any = 0
@@ -341,6 +527,33 @@ _REVENUE_COMPONENT_TAGS = (
 _REVENUE_IDENTITY_TOLERANCE = 0.01
 # Below this fraction of the largest candidate, the preferred tag is a sub-line.
 _REVENUE_SUBLINE_RATIO = 0.5
+# Total derivative gain (loss) tags; some filers present one inside revenue.
+_DERIVATIVE_GAIN_LOSS_TAGS = (
+    "DerivativeGainLossOnDerivativeNet",
+    "DerivativeInstrumentsNotDesignatedAsHedgingInstrumentsGainLossNet",
+    "GainLossOnDerivativeInstrumentsNetPretax",
+    "GainLossOnPriceRiskDerivativeInstrumentsNotDesignatedAsHedgingInstruments",
+    "DerivativeInstrumentsGainLossRecognizedInIncomeNet",
+)
+
+
+def _revenue_candidates(data_dict: Dict[str, Any]) -> set:
+    """Non-zero TAG_MAPPINGS["revenue"] values that may be the consolidated total."""
+    skipped = set(_REVENUE_COMPONENT_TAGS)
+    if (
+        _get_value_from_tags(data_dict, [_CONTRACT_REVENUE_TAGS[0]], default=None)
+        is not None
+    ):
+        skipped.add(_CONTRACT_REVENUE_TAGS[1])
+    return {
+        value
+        for value in (
+            _get_value_from_tags(data_dict, [tag], default=None)
+            for tag in TAG_MAPPINGS["revenue"]
+            if tag not in skipped
+        )
+        if value is not None
+    }
 
 
 def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
@@ -359,18 +572,7 @@ def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     preferred = _get_value_from_tags(data_dict, TAG_MAPPINGS["revenue"], default=None)
     if preferred is None:
         return default
-    skipped = set(_REVENUE_COMPONENT_TAGS)
-    if _get_value_from_tags(data_dict, [_CONTRACT_REVENUE_TAGS[0]], default=None) is not None:
-        skipped.add(_CONTRACT_REVENUE_TAGS[1])
-    candidates = {
-        value
-        for value in (
-            _get_value_from_tags(data_dict, [tag], default=None)
-            for tag in TAG_MAPPINGS["revenue"]
-            if tag not in skipped
-        )
-        if value is not None
-    }
+    candidates = _revenue_candidates(data_dict)
     candidates.add(preferred)
     if len(candidates) == 1:
         return preferred
@@ -390,6 +592,59 @@ def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     if preferred < _REVENUE_SUBLINE_RATIO * largest:
         return largest
     return preferred
+
+
+def _get_revenue_excluding_derivatives(data_dict: Dict[str, Any], revenue: Any) -> Any:
+    """`revenue` less a derivative gain (loss) presented inside it.
+
+    EQT books hedging gains/losses in total revenues ($7.50B FY2022 after a
+    $4.64B loss, against $12.11B of sales). A derivative tag counts as part of
+    revenue only when revenue minus it lands within tolerance of another
+    revenue candidate, and closer than revenue itself; otherwise the filer
+    reports it outside revenue and `revenue` is returned unchanged.
+    """
+    if not revenue:
+        return revenue
+    others = _revenue_candidates(data_dict) - {revenue}
+    for tag in _DERIVATIVE_GAIN_LOSS_TAGS:
+        derivative = data_dict.get(tag)
+        if not derivative:
+            continue
+        excluded = revenue - derivative
+        for other in others:
+            gap = abs(excluded - other)
+            if gap <= _REVENUE_IDENTITY_TOLERANCE * abs(excluded) and gap < abs(
+                revenue - other
+            ):
+                return excluded
+    return revenue
+
+
+# Summed by _get_depreciation_value when no combined D&A tag is reported.
+_DEPRECIATION_COMPONENT_TAGS = frozenset(
+    {
+        "AdjustmentsForDepreciationExpense",
+        "AdjustmentsForAmortisationExpense",
+        "Depreciation",
+        "AmortizationOfIntangibleAssets",
+    }
+)
+
+
+def _get_depreciation_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
+    """Returns D&A, falling back to depreciation plus intangible amortization."""
+    value = _get_value_from_tags(data_dict, TAG_MAPPINGS["depreciation"], default=0)
+    if value == 0:
+        # IFRS filers report the two components separately.
+        value = (data_dict.get("AdjustmentsForDepreciationExpense") or 0) + (
+            data_dict.get("AdjustmentsForAmortisationExpense") or 0
+        )
+    if value == 0:
+        # Filers without a combined D&A tag (GOOGL tags only `Depreciation`).
+        value = (data_dict.get("Depreciation") or 0) + (
+            data_dict.get("AmortizationOfIntangibleAssets") or 0
+        )
+    return value if value != 0 else default
 
 
 def _get_first_available_value(
@@ -756,6 +1011,11 @@ def _get_financial_statement_data(
             "DeferredRevenueCurrent",
             "DeferredRevenueNoncurrent",
             "DeferredRevenueRevenueRecognized1",
+            *_DERIVATIVE_GAIN_LOSS_TAGS,  # see _get_revenue_excluding_derivatives
+            "AmortizationOfIntangibleAssets",
+            "Depreciation",
+            "DepreciationAmortizationAndAccretionNet",
+            "DepreciationAndAmortization",
             "DepreciationDepletionAndAmortization",
             "DisposalGroupIncludingDiscontinuedOperationDeferredRevenueCurrent",
             "EarningsPerShareBasic",
@@ -768,6 +1028,10 @@ def _get_financial_statement_data(
             "IncomeBeforeTax",
             "IncomeLossFromContinuingOperationsBeforeIncomeTax",
             "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+            "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest",
+            "IncomeLossFromDiscontinuedOperationsNetOfTax",
+            "IncomeLossFromDiscontinuedOperationsNetOfTaxAttributableToReportingEntity",
             "IncomeTaxExpenseBenefit",
             "IncreaseDecreaseInDeferredRevenue",
             "InsuranceServicesRevenue",
@@ -778,9 +1042,11 @@ def _get_financial_statement_data(
             "InterestRevenueExpenseNet",
             "MarketDataRevenue",
             "NetIncomeLoss",
+            "NetIncomeLossAttributableToNoncontrollingInterest",
             "NetIncomeLossAvailableToCommonStockholdersBasic",
             "NetIncomeLossFromContinuingOperationsAvailableToCommonShareholdersBasic",
             "NetIncomeLossFromDiscontinuedOperationsNetOfTax",
+            "NonoperatingIncomeExpense",
             "NonoperatingIncomeLoss",
             "OperatingExpenses",
             "OperatingIncomeLoss",
@@ -916,6 +1182,10 @@ def _get_financial_statement_data(
             "CashAndCashEquivalentsPeriodIncreaseDecrease",
             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsAtBeginningOfPeriod",
             "DeferredIncomeTaxExpenseBenefit",
+            "AmortizationOfIntangibleAssets",
+            "Depreciation",
+            "DepreciationAmortizationAndAccretionNet",
+            "DepreciationAndAmortization",
             "DepreciationDepletionAndAmortization",
             "EffectOfExchangeRateOnCashAndCashEquivalents",
             "IncreaseDecreaseInAccountsPayableCurrent",
@@ -1203,12 +1473,23 @@ def _get_financial_statement_data(
         "WeightedAverageNumberOfDilutedSharesOutstanding",
         "CommonStockSharesOutstanding",
     }
+    # Year-over-year stable tags, safe for the mis-dated annual fact check.
+    stable_flow_tags = set(TAG_MAPPINGS["revenue"]) | set(TAG_MAPPINGS["costOfRevenue"])
+    # 10-K report instance key -> tags it disclosed only for a sub-annual span.
+    short_span_tags_by_report = {}
+    # 10-K report instance key -> {tag: [(start, end, value)] quarter facts of
+    # that filing} for tags with no annual fact, and -> starts of its annual facts.
+    quarter_facts_by_report = {}
+    annual_starts_by_report = {}
 
     for tag in required_tags:
         concept_data = taxonomy_facts.get(tag, {})
         for unit_type, facts_list in concept_data.get("units", {}).items():
             # Group facts by (form_type, filed_at, end_date, start_date)
             values_by_key = {}
+            annual_values_by_end = {}
+            # 10-K filedAt -> [(start, end, value)] of its quarter-length facts.
+            quarters_by_filing = {}
             for fact in facts_list:
                 fiscal_year = fact.get("fy")
                 fiscal_period = fact.get("fp")
@@ -1226,6 +1507,10 @@ def _get_financial_statement_data(
                     and fiscal_period
                     and value is not None
                 ):
+                    continue
+                if end_date > filed_at:
+                    # Projection, not an actual (IBKR's 2017 10-K tags
+                    # amortization expected for 2019).
                     continue
 
                 # Determine form group - handle both US domestic (10-K/10-Q) and
@@ -1284,16 +1569,50 @@ def _get_financial_statement_data(
                     # ~90-day quarterly leaks to Step 3.1's duration
                     # filter below, and they were wrongly dropped entirely
                     # (AXP alone lost 7 consecutive years, 2014-2020).
-                    report_instances_data[report_instance_key][
-                        "startDate"
-                    ] = start_date
+                    report_instances_data[report_instance_key]["startDate"] = start_date
                 # Collect all values for this tag/period/form
+                span_days = _fact_span_days(start_date, end_date)
                 values_by_key.setdefault(report_instance_key, []).append(
-                    (_fact_span_days(start_date, end_date), value)
+                    (span_days, value)
                 )
+                if form_group == "10-K" and span_days >= _MIN_ANNUAL_SPAN_DAYS:
+                    annual_values_by_end[end_date] = value
+                    annual_starts_by_report.setdefault(report_instance_key, set()).add(
+                        start_date
+                    )
+                elif (
+                    form_group == "10-K"
+                    and _MIN_QUARTER_SPAN_DAYS <= span_days <= _MAX_QUARTER_SPAN_DAYS
+                ):
+                    quarters_by_filing.setdefault(filed_at, []).append(
+                        (start_date, end_date, value)
+                    )
 
             # After collecting all values for this tag/unit, select the best one
             for report_instance_key, values in values_by_key.items():
+                if report_instance_key[0] == "10-K":
+                    # COO's FY2019 10-K tags pre-tax income only for Q4.
+                    prior = (
+                        _prior_year_value(annual_values_by_end, report_instance_key[1])
+                        if tag in stable_flow_tags
+                        else None
+                    )
+                    values = _annual_fact_values(values, prior)
+                    if not values:
+                        short_span_tags_by_report.setdefault(
+                            report_instance_key, set()
+                        ).add(tag)
+                        quarters = quarters_by_filing.get(report_instance_key[2])
+                        # Per-share and share counts don't add up across quarters.
+                        if (
+                            quarters
+                            and tag not in eps_tags
+                            and tag not in share_count_tags
+                        ):
+                            quarter_facts_by_report.setdefault(report_instance_key, {})[
+                                tag
+                            ] = quarters
+                        continue
                 data_dict = report_instances_data[report_instance_key]["data"]
                 if tag in eps_tags:
                     # EPS: pick the highest value
@@ -1328,6 +1647,7 @@ def _get_financial_statement_data(
     # Select appropriate key items based on statement type and taxonomy using module-level constant
     taxonomy_key = "ifrs" if using_ifrs else "us_gaap"
     key_items_to_check = KEY_ITEMS.get(statement_type, {}).get(taxonomy_key, [])
+    period_tags = _PERIOD_DEFINING_TAGS.get(statement_type, frozenset())
 
     for key, reports in reports_by_period.items():
         if not reports:
@@ -1338,9 +1658,7 @@ def _get_financial_statement_data(
 
         # Check if the earliest report has sufficient data
         data = selected_report.get("data", {})
-        has_sufficient_data = (
-            _count_nonzero_key_items(data, key_items_to_check) >= 2
-        )
+        has_sufficient_data = _count_nonzero_key_items(data, key_items_to_check) >= 2
 
         # If the earliest report has insufficient data, supplement it from a
         # later report covering the same endDate - but keep the earliest
@@ -1356,27 +1674,55 @@ def _get_financial_statement_data(
         # "2023" (colliding with the real FY2023 report) instead of "2022" -
         # merging data-only preserves the correct fiscal year label.
         if not has_sufficient_data and len(reports) > 1:
-            for i in range(1, len(reports)):
-                candidate_report = reports[i]
-                candidate_data = candidate_report.get("data", {})
-                candidate_has_sufficient_data = (
-                    _count_nonzero_key_items(candidate_data, key_items_to_check) >= 2
+            later_reports = reports[1:]
+            donor = next(
+                (
+                    candidate
+                    for candidate in later_reports
+                    if _count_nonzero_key_items(
+                        candidate.get("data", {}), key_items_to_check
+                    )
+                    >= 2
+                ),
+                None,
+            )
+            merged_data = data
+            if donor is not None:
+                # The earliest report's own (possibly sparse) values win
+                # over the donor's for any tag both report.
+                merged_data = {**donor.get("data", {}), **data}
+            elif any(data.get(t) for t in period_tags):
+                # No later report has sufficient data either: a duration
+                # report that is already a real period takes the groups it
+                # lacks from all of them (TJX FY2010 interest expense is only
+                # in later 10-Ks, each with one key item). Footnote-only
+                # reports aren't topped up into periods (WAT 2017 cash flow),
+                # nor balance sheets.
+                merged_data = _merge_missing_groups(
+                    data, later_reports, eps_tags | share_count_tags
                 )
+                donor = later_reports[0]
+            if merged_data != data:
+                merged_report = dict(reports[0])
+                merged_report["data"] = merged_data
+                # Provenance: part of this report's data was borrowed
+                # from a later filing's comparative disclosure.
+                merged_report["dataSupplementedFrom"] = donor["filedAt"]
+                selected_report = merged_report
 
-                # If this report has sufficient data, use it - merging its
-                # data under the earliest report's own metadata, with the
-                # earliest report's own (possibly sparse) data values
-                # winning over the candidate's for any tag both report.
-                if candidate_has_sufficient_data:
-                    merged_report = dict(reports[0])
-                    merged_data = dict(candidate_data)
-                    merged_data.update(data)
-                    merged_report["data"] = merged_data
-                    # Provenance: part of this report's data was borrowed
-                    # from a later filing's comparative disclosure.
-                    merged_report["dataSupplementedFrom"] = candidate_report["filedAt"]
-                    selected_report = merged_report
-                    break
+        if key[0] == "10-K":
+            original_key = (key[0], key[1], reports[0]["filedAt"])
+            if len(reports) > 1:
+                selected_report = _fill_short_span_groups(
+                    selected_report,
+                    reports[1:],
+                    short_span_tags_by_report.get(original_key, set()),
+                )
+            selected_report = _fill_from_quarter_sums(
+                selected_report,
+                quarter_facts_by_report.get(original_key, {}),
+                annual_starts_by_report.get(original_key, set()),
+            )
 
         canonical_reports[key] = selected_report
 
@@ -1408,9 +1754,20 @@ def _get_financial_statement_data(
         start_d, end_d = _parse_iso_date(start), _parse_iso_date(end)
         if start_d is None or end_d is None:
             return True
-        return (end_d - start_d).days >= 250
+        return (end_d - start_d).days >= _MIN_ANNUAL_SPAN_DAYS
 
     ten_k_reports = [r for r in ten_k_reports if _is_plausible_annual_report(r)]
+
+    # Drop duration reports with no period-defining item: footnote-only facts
+    # at a non-period date (MO 10-Qs tag full-year D&A at Dec 31) would
+    # otherwise take `limit` slots from real periods.
+    if period_tags:
+
+        def _is_real_period(report):
+            return _count_nonzero_key_items(report.get("data", {}), period_tags) > 0
+
+        ten_k_reports = [r for r in ten_k_reports if _is_real_period(r)]
+        ten_q_reports = [r for r in ten_q_reports if _is_real_period(r)]
 
     # Step 4: Sort each list by endDate (primary) and filedAt (secondary, for
     # tie-breaking), most recent first
@@ -1808,25 +2165,25 @@ def _get_financial_statement_data(
         if period_details["formGroup"] == "10-K":
             period_val = "FY"
 
-        # Revenue: largest of the TAG_MAPPINGS US GAAP and IFRS candidates
+        # Revenue: see _get_revenue_value for how disagreeing tags are resolved
         revenue = _get_revenue_value(data, default=0)
+        revenueExcludingDerivatives = _get_revenue_excluding_derivatives(data, revenue)
 
         # Cost of Revenue: Use centralized TAG_MAPPINGS
         costOfRevenue = _get_value_from_tags(
             data, TAG_MAPPINGS["costOfRevenue"], default=0
         )
 
-        # GrossProfit can be explicitly found or calculated.
-        # If GrossProfit tag exists and is non-zero, use it. Otherwise,
-        # calculate.
+        # A reported GrossProfit, else revenue - cost of revenue. With neither
+        # tag gross profit is unknown, not 100% of revenue (TJX FY2010 has no
+        # cost-of-sales fact).
         grossProfit_explicit = get_val("GrossProfit")
-        grossProfit = (
-            grossProfit_explicit
-            if grossProfit_explicit != 0
-            else (revenue - costOfRevenue)
-        )
-        # If GrossProfit was explicitly 0, but revenue and CoR allow calculation, it will be calculated.
-        # If GrossProfit tag was not found, it will be calculated.
+        if grossProfit_explicit != 0:
+            grossProfit = grossProfit_explicit
+        elif costOfRevenue != 0:
+            grossProfit = revenue - costOfRevenue
+        else:
+            grossProfit = 0
 
         generalAndAdministrativeExpenses = 0
         sellingAndMarketingExpenses = 0
@@ -1890,8 +2247,10 @@ def _get_financial_statement_data(
         interestIncome_val = _get_value_from_tags(
             data, TAG_MAPPINGS["interestIncome"], default=0
         )
-        interestExpense_val = _get_value_from_tags(
-            data, TAG_MAPPINGS["interestExpense"], default=0
+        # A negative interest-expense fact is a filer sign error (DHI's FY2013
+        # 10-K tags FY2011-13 negative, its FY2014 10-K positive; DIS, ORCL).
+        interestExpense_val = abs(
+            _get_value_from_tags(data, TAG_MAPPINGS["interestExpense"], default=0)
         )
         interestIncomeExpenseNet_val = get_val("InterestIncomeExpenseNet")
         if interestIncomeExpenseNet_val == 0:
@@ -1911,15 +2270,7 @@ def _get_financial_statement_data(
 
         netInterestIncome = interestIncome_val - interestExpense_val  # Derived
 
-        # Depreciation and Amortization: Use centralized TAG_MAPPINGS
-        depreciationAndAmortization = _get_value_from_tags(
-            data, TAG_MAPPINGS["depreciation"], default=0
-        )
-        # Additional IFRS fallback for sum of depreciation and amortization
-        if depreciationAndAmortization == 0:
-            depreciationAndAmortization = get_val(
-                "AdjustmentsForDepreciationExpense"
-            ) + get_val("AdjustmentsForAmortisationExpense")
+        depreciationAndAmortization = _get_depreciation_value(data, default=0)
 
         # Operating Income: Use centralized TAG_MAPPINGS
         operatingIncome = _get_value_from_tags(
@@ -1934,7 +2285,7 @@ def _get_financial_statement_data(
             )
             if preTaxIncome != 0:
                 # Add back financing costs and non-operating items
-                interestExpense = get_val("InterestExpense")
+                interestExpense = abs(get_val("InterestExpense"))
                 interestIncome = get_val("InterestIncomeOther")
                 otherNonOperating = get_val("OtherNonoperatingIncomeExpense")
                 royaltyIncomeNonOperating = get_val("RoyaltyIncomeNonoperating")
@@ -1957,6 +2308,17 @@ def _get_financial_statement_data(
                     logger.info(
                         f"[DEBUG] Derived operating income from pre-tax income: {operatingIncome} = {preTaxIncome} + {netInterestExpense} + {netOtherNonOperating}"
                     )
+
+            # Revenue - total costs, when reported: NEM's summed-quarter gross
+            # profit minus its expense lines gave 2019 -118M, this 1,277M.
+            # Costs under half of revenue are a sub-line's (COP 2010, GE 2007).
+            totalCosts = _get_value_from_tags(data, _TOTAL_COST_TAGS, default=0)
+            if (
+                operatingIncome == 0
+                and revenue > 0
+                and totalCosts >= _REVENUE_SUBLINE_RATIO * revenue
+            ):
+                operatingIncome = revenue - totalCosts
 
             # Method 2: If pre-tax income method didn't work, fall back to gross profit calculation
             if operatingIncome == 0:
@@ -1982,17 +2344,11 @@ def _get_financial_statement_data(
         ebitda = operatingIncome + depreciationAndAmortization  # Derived
         ebit = operatingIncome  # ebit is Operating Income
 
-        totalOtherIncomeExpensesNet = get_val("NonoperatingIncomeLoss")
-
-        # Income Before Tax: Use centralized TAG_MAPPINGS
-        incomeBeforeTax = _get_value_from_tags(
-            data, TAG_MAPPINGS["incomeBeforeTax"], default=0
+        # `NonoperatingIncomeExpense` is the US GAAP element (GOOGL "Other
+        # income (expense), net"); some filers include interest in it.
+        totalOtherIncomeExpensesNet = _get_value_from_tags(
+            data, ["NonoperatingIncomeExpense", "NonoperatingIncomeLoss"], default=0
         )
-        # Fallback calculation for Income Before Tax (EBT)
-        if incomeBeforeTax == 0 and operatingIncome != 0:
-            incomeBeforeTax = (
-                operatingIncome + netInterestIncome + totalOtherIncomeExpensesNet
-            )  # Common derivation
 
         # Income Tax Expense: Use centralized TAG_MAPPINGS
         incomeTaxExpense = _get_value_from_tags(
@@ -2007,12 +2363,39 @@ def _get_financial_statement_data(
         # Net Income: Use centralized TAG_MAPPINGS
         netIncome = _get_value_from_tags(data, TAG_MAPPINGS["netIncome"], default=0)
 
-        netIncomeFromDiscontinuedOperations = get_val(
-            "NetIncomeLossFromDiscontinuedOperationsNetOfTax"
+        netIncomeFromDiscontinuedOperations = _get_value_from_tags(
+            data, _DISCONTINUED_OPERATIONS_TAGS, default=0
         )
         netIncomeFromContinuingOperations = (
             netIncome - netIncomeFromDiscontinuedOperations
         )  # Derived
+
+        # Income Before Tax: Use centralized TAG_MAPPINGS
+        incomeBeforeTax = _get_value_from_tags(
+            data, TAG_MAPPINGS["incomeBeforeTax"], default=0
+        )
+        if incomeBeforeTax == 0:
+            # Consolidated continuing-ops income + tax. Bottom-up from operating
+            # income double-counts interest for filers whose
+            # NonoperatingIncomeExpense already includes it (RCL, NI, LH).
+            continuing_consolidated = get_val(
+                "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest"
+            )
+            if continuing_consolidated == 0 and netIncome != 0:
+                continuing_consolidated = (
+                    netIncome
+                    + get_val("NetIncomeLossAttributableToNoncontrollingInterest")
+                    - netIncomeFromDiscontinuedOperations
+                )
+            if continuing_consolidated != 0:
+                incomeBeforeTax = continuing_consolidated + incomeTaxExpense
+            elif operatingIncome != 0:
+                incomeBeforeTax = operatingIncome + totalOtherIncomeExpensesNet
+                if not data.get("NonoperatingIncomeExpense"):
+                    # NonoperatingIncomeExpense usually already includes
+                    # interest (AAPL, MSFT, GOOGL); NonoperatingIncomeLoss
+                    # keeps the old operating + interest + other formula.
+                    incomeBeforeTax += netInterestIncome
 
         # EPS: Use centralized TAG_MAPPINGS
         eps = _get_value_from_tags(data, TAG_MAPPINGS["eps"], default=0)
@@ -2050,6 +2433,7 @@ def _get_financial_statement_data(
             item = {
                 **base_item,
                 "revenue": revenue,
+                "revenueExcludingDerivatives": revenueExcludingDerivatives,
                 "costOfRevenue": costOfRevenue,
                 "grossProfit": grossProfit,
                 "researchAndDevelopmentExpense": researchAndDevelopmentExpense,
@@ -2586,13 +2970,7 @@ def _get_financial_statement_data(
                     "ProfitLossAttributableToOwnersOfParent",  # IFRS
                 ],
             )  # Often starting point
-            depreciationAndAmortization_cf = get_val(
-                "DepreciationDepletionAndAmortization",
-                alternate_tags=[
-                    "DepreciationAndAmortisationExpense",  # IFRS
-                    "AdjustmentsForDepreciationExpense",  # IFRS
-                ],
-            )
+            depreciationAndAmortization_cf = _get_depreciation_value(data, default=0)
             deferredIncomeTax_cf = get_val(
                 "DeferredIncomeTaxExpenseBenefit",
                 alternate_tags=[

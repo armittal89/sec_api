@@ -1,30 +1,46 @@
 """Revenue tag selection when candidate tags disagree."""
 
-from sec_financial_data.sec_financial_data import _get_revenue_value
+from sec_financial_data.sec_financial_data import (
+    _get_revenue_excluding_derivatives,
+    _get_revenue_value,
+)
 
 EXCL = "RevenueFromContractWithCustomerExcludingAssessedTax"
 INCL = "RevenueFromContractWithCustomerIncludingAssessedTax"
+PRICE_RISK = "GainLossOnPriceRiskDerivativeInstrumentsNotDesignatedAsHedgingInstruments"
 B = 1_000_000_000
 
 
 def test_identity_picks_revenues_over_partial_contract_revenue():
     # HUM FY2024: contract revenue is only the services line.
-    data = {INCL: 4.43 * B, "Revenues": 117.76 * B,
-            "OperatingIncomeLoss": 2.56 * B, "BenefitsLossesAndExpenses": 115.20 * B}
+    data = {
+        INCL: 4.43 * B,
+        "Revenues": 117.76 * B,
+        "OperatingIncomeLoss": 2.56 * B,
+        "BenefitsLossesAndExpenses": 115.20 * B,
+    }
     assert _get_revenue_value(data) == 117.76 * B
 
 
 def test_identity_picks_contract_over_gross_revenues():
     # HAS FY2024: `Revenues` is a gross pre-elimination figure.
-    data = {EXCL: 4.136 * B, "Revenues": 4.746 * B,
-            "OperatingIncomeLoss": 0.69 * B, "CostsAndExpenses": 3.446 * B}
+    data = {
+        EXCL: 4.136 * B,
+        "Revenues": 4.746 * B,
+        "OperatingIncomeLoss": 0.69 * B,
+        "CostsAndExpenses": 3.446 * B,
+    }
     assert _get_revenue_value(data) == 4.136 * B
 
 
 def test_identity_small_gap_still_overrides_tag_order():
     # LYFT FY2024: contract revenue is 7% short of the reported total.
-    data = {EXCL: 5.37 * B, "Revenues": 5.786 * B,
-            "OperatingIncomeLoss": -0.12 * B, "CostsAndExpenses": 5.906 * B}
+    data = {
+        EXCL: 5.37 * B,
+        "Revenues": 5.786 * B,
+        "OperatingIncomeLoss": -0.12 * B,
+        "CostsAndExpenses": 5.906 * B,
+    }
     assert _get_revenue_value(data) == 5.786 * B
 
 
@@ -42,17 +58,25 @@ def test_close_candidates_without_identity_keep_tag_order():
 
 def test_unmatched_identity_falls_through():
     # A sub-line OperatingExpenses (KMI) matches no candidate.
-    data = {EXCL: 13.48 * B, "Revenues": 15.10 * B,
-            "OperatingIncomeLoss": 4.38 * B, "OperatingExpenses": 0.74 * B}
+    data = {
+        EXCL: 13.48 * B,
+        "Revenues": 15.10 * B,
+        "OperatingIncomeLoss": 4.38 * B,
+        "OperatingExpenses": 0.74 * B,
+    }
     assert _get_revenue_value(data) == 13.48 * B
 
 
 def test_operating_expenses_gross_profit_identity_is_ignored():
     # DELL FY2018: OperatingExpenses excludes cost of sales, so op income +
     # opex is gross profit, which sits within 1% of the services line.
-    data = {"SalesRevenueNet": 78.66 * B, "SalesRevenueGoodsNet": 58.80 * B,
-            "SalesRevenueServicesNet": 19.86 * B,
-            "OperatingIncomeLoss": -3.33 * B, "OperatingExpenses": 23.39 * B}
+    data = {
+        "SalesRevenueNet": 78.66 * B,
+        "SalesRevenueGoodsNet": 58.80 * B,
+        "SalesRevenueServicesNet": 19.86 * B,
+        "OperatingIncomeLoss": -3.33 * B,
+        "OperatingExpenses": 23.39 * B,
+    }
     assert _get_revenue_value(data) == 78.66 * B
 
 
@@ -71,3 +95,26 @@ def test_single_and_fallback_tags():
 def test_no_candidate_returns_default():
     assert _get_revenue_value({"NetIncomeLoss": 5}) == 0
     assert _get_revenue_value({"Revenues": 0, EXCL: None}, default=None) is None
+
+
+def test_derivative_loss_inside_revenue_is_added_back():
+    # EQT FY2022: total revenues include a $4.64B hedging loss.
+    revenue = 7.497689 * B
+    data = {EXCL: 12.114168 * B, "Revenues": revenue, PRICE_RISK: -4.642932 * B}
+    assert _get_revenue_excluding_derivatives(data, revenue) == revenue + 4.642932 * B
+
+
+def test_derivative_outside_revenue_is_left_alone():
+    # Adding the loss back moves revenue away from the contract total.
+    data = {EXCL: 10 * B, "Revenues": 10.05 * B, PRICE_RISK: -0.5 * B}
+    assert _get_revenue_excluding_derivatives(data, 10.05 * B) == 10.05 * B
+
+
+def test_derivative_without_comparable_candidate_is_left_alone():
+    # EQT FY2024 tags only `Revenues`, so inclusion can't be confirmed.
+    data = {"Revenues": 5.273309 * B, PRICE_RISK: 0.051117 * B}
+    assert _get_revenue_excluding_derivatives(data, 5.273309 * B) == 5.273309 * B
+
+
+def test_no_revenue_passes_through():
+    assert _get_revenue_excluding_derivatives({PRICE_RISK: 1 * B}, 0) == 0
