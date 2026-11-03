@@ -35,16 +35,12 @@ logger.setLevel(logging.INFO)
 # Tag mappings with primary (US GAAP) and alternate (IFRS) tags
 # Format: {output_field: [primary_tag, *alternate_tags]}
 TAG_MAPPINGS = {
-    # Revenue tags - the ASC 606 contract-revenue tags come first, ahead of
-    # the older, generic `Revenues` tag. Confirmed for BlackRock: `Revenues`
-    # reports only $11.01B (one revenue line item) while
-    # `RevenueFromContractWithCustomerExcludingAssessedTax` reports the
-    # real $17.86B consolidated total for the same FY2023 period - for
-    # multi-revenue-stream companies (financial services especially),
-    # `Revenues` can silently hold a partial figure instead of the total.
-    # The same reordering also produces a far more plausible total for
-    # GIS's previously-corrupted years (~$20B vs `Revenues`'s $2.04B,
-    # which turned out to be a segment-level fact).
+    # Revenue tags - priority-ordered, but read via _get_revenue_value,
+    # which overrides the order when candidates disagree. Contract revenue
+    # comes first because BLK FY2023 `Revenues` is one line item ($11.01B)
+    # against a $17.86B contract total (GIS: ~$20B vs a $2.04B
+    # segment-level `Revenues`); HUM FY2025 is the reverse (contract
+    # $5.8B services line, `Revenues` $129.7B total).
     "revenue": [
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "RevenueFromContractWithCustomerIncludingAssessedTax",
@@ -325,6 +321,75 @@ def _get_value_from_tags(
             if val is not None and val != 0:
                 return val
     return default
+
+
+_CONTRACT_REVENUE_TAGS = (
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+)
+# Total-cost tags for the revenue = operating income + total costs identity.
+# Not `OperatingExpenses`: many filers exclude cost of sales from it, so the
+# sum is gross profit (DELL FY2018 matched its $19.86B services line).
+_TOTAL_COST_TAGS = ("CostsAndExpenses", "BenefitsLossesAndExpenses")
+# Single revenue lines; never the consolidated total.
+_REVENUE_COMPONENT_TAGS = (
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet",
+    "RevenueFromSaleOfGoods",
+    "RevenueFromRenderingOfServices",
+)
+_REVENUE_IDENTITY_TOLERANCE = 0.01
+# Below this fraction of the largest candidate, the preferred tag is a sub-line.
+_REVENUE_SUBLINE_RATIO = 0.5
+
+
+def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
+    """Revenue from TAG_MAPPINGS["revenue"], choosing among candidates that disagree.
+
+    No single tag is reliably the consolidated total: `Revenues` is one
+    line or a segment fact for BLK/GIS, contract revenue is only the
+    services line for HUM (premiums are insurance), and RSG/HAS tag a gross
+    pre-elimination figure as `Revenues`. So: (1) the candidate matching
+    operating income + total costs; else (2) the largest candidate when the
+    preferred one is under half of it; else (3) the first by tag order.
+    The tax-included contract tag is a candidate only without the
+    tax-excluded one (PM: $80.7B with excise vs $31.8B net revenue), and
+    component lines never are.
+    """
+    preferred = _get_value_from_tags(data_dict, TAG_MAPPINGS["revenue"], default=None)
+    if preferred is None:
+        return default
+    skipped = set(_REVENUE_COMPONENT_TAGS)
+    if _get_value_from_tags(data_dict, [_CONTRACT_REVENUE_TAGS[0]], default=None) is not None:
+        skipped.add(_CONTRACT_REVENUE_TAGS[1])
+    candidates = {
+        value
+        for value in (
+            _get_value_from_tags(data_dict, [tag], default=None)
+            for tag in TAG_MAPPINGS["revenue"]
+            if tag not in skipped
+        )
+        if value is not None
+    }
+    candidates.add(preferred)
+    if len(candidates) == 1:
+        return preferred
+
+    operating_income = data_dict.get("OperatingIncomeLoss")
+    if operating_income is not None:
+        for cost_tag in _TOTAL_COST_TAGS:
+            total_costs = data_dict.get(cost_tag)
+            if not total_costs:
+                continue
+            implied = operating_income + total_costs
+            closest = min(candidates, key=lambda value: abs(value - implied))
+            if abs(closest - implied) <= _REVENUE_IDENTITY_TOLERANCE * abs(implied):
+                return closest
+
+    largest = max(candidates)
+    if preferred < _REVENUE_SUBLINE_RATIO * largest:
+        return largest
+    return preferred
 
 
 def _get_first_available_value(
@@ -677,6 +742,7 @@ def _get_financial_statement_data(
     # company_facts data.
     statement_tags_us_gaap = {
         "income_statement": [
+            "BenefitsLossesAndExpenses",  # revenue identity, see _get_revenue_value
             "BusinessAcquisitionsProFormaRevenue",
             "BusinessCombinationProFormaInformationRevenueOfAcquireeSinceAcquisitionDateActual",
             "ContractWithCustomerAssetCumulativeCatchUpAdjustmentToRevenueChangeInMeasureOfProgress",
@@ -684,6 +750,7 @@ def _get_financial_statement_data(
             "ContractWithCustomerLiabilityRevenueRecognized",
             "CostOfGoodsAndServicesSold",
             "CostOfRevenue",
+            "CostsAndExpenses",  # revenue identity, see _get_revenue_value
             "DeferredRevenue",
             "DeferredRevenueAdditions",
             "DeferredRevenueCurrent",
@@ -1741,8 +1808,8 @@ def _get_financial_statement_data(
         if period_details["formGroup"] == "10-K":
             period_val = "FY"
 
-        # Revenue: Use centralized TAG_MAPPINGS for US GAAP and IFRS tags
-        revenue = _get_value_from_tags(data, TAG_MAPPINGS["revenue"], default=0)
+        # Revenue: largest of the TAG_MAPPINGS US GAAP and IFRS candidates
+        revenue = _get_revenue_value(data, default=0)
 
         # Cost of Revenue: Use centralized TAG_MAPPINGS
         costOfRevenue = _get_value_from_tags(
