@@ -18,6 +18,45 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 
+_PER_SHARE_FIELDS = (
+    "eps",
+    "epsDiluted",
+    "earningsPerShareBasic",
+    "earningsPerShareDiluted",
+)
+_SHARE_COUNT_FIELDS = (
+    "weightedAverageShsOut",
+    "weightedAverageShsOutDil",
+    "weightedAverageNumberOfSharesOutstandingBasic",
+    "weightedAverageNumberOfDilutedSharesOutstanding",
+    "commonStockSharesOutstanding",
+)
+
+
+def _parse_day(value: Any) -> Optional[datetime]:
+    """Parses the 'YYYY-MM-DD' prefix of a date string; None if absent/invalid."""
+    if not isinstance(value, str) or len(value) < 10:
+        return None
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _split_cutoff(split: Dict[str, Any]) -> Optional[datetime]:
+    """Day from which filings report post-split figures.
+
+    The later of the effective date and the filing date: an 8-K announcing a
+    split can precede the effective date.
+    """
+    days = [
+        d
+        for d in (_parse_day(split.get("date")), _parse_day(split.get("filing_date")))
+        if d is not None
+    ]
+    return max(days) if days else None
+
+
 class StockSplitDetector:
     """
     Detects stock splits from SEC filings and provides methods for financial data adjustment.
@@ -764,216 +803,64 @@ class StockSplitDetector:
     def adjust_financials_for_split(
         self, data: List[Dict[str, Any]], split: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """
-        Adjust financial data for a stock split.
-
-        Args:
-            data: List of financial data dicts
-            split: Stock split information dict
-
-        Returns:
-            Adjusted financial data
-        """
-        if not data or not split:
-            return data
-
-        ratio = split["ratio"]
-        split_filing_date = split["filing_date"]
-
-        logger.info(
-            f"[DEBUG] Adjusting financial data for split: ratio={ratio}, filing_date={split_filing_date}"
-        )
-
-        try:
-            split_filing_date_obj = datetime.strptime(split_filing_date, "%Y-%m-%d")
-        except Exception as e:
-            logger.error(
-                f"[DEBUG] Error parsing split filing date '{split_filing_date}': {e}"
-            )
-            return data
-
-        adjusted_count = 0
-        for i, item in enumerate(data):
-            item_date = (
-                item.get("date") or item.get("fiscalDateEnding") or item.get("endDate")
-            )
-
-            if item_date:
-                try:
-                    item_date_obj = datetime.strptime(item_date, "%Y-%m-%d")
-                    should_adjust = item_date_obj < split_filing_date_obj
-
-                    if should_adjust:
-                        logger.info(
-                            f"[DEBUG] Adjusting item {i}: date={item_date} (split filing date={split_filing_date})"
-                        )
-
-                        # Adjust per-share metrics
-                        for field in [
-                            "eps",
-                            "epsDiluted",
-                            "earningsPerShareBasic",
-                            "earningsPerShareDiluted",
-                        ]:
-                            if field in item and item[field] is not None:
-                                old_value = item[field]
-                                item[field] /= ratio
-                                logger.info(
-                                    f"[DEBUG] Adjusted {field}: {old_value:.2f} -> {item[field]:.2f}"
-                                )
-
-                        # Adjust share count metrics
-                        for field in [
-                            "weightedAverageShsOut",
-                            "weightedAverageShsOutDil",
-                            "weightedAverageNumberOfSharesOutstandingBasic",
-                            "weightedAverageNumberOfDilutedSharesOutstanding",
-                            "commonStockSharesOutstanding",
-                        ]:
-                            if field in item and item[field] is not None:
-                                old_value = item[field]
-                                item[field] *= ratio
-                                logger.info(
-                                    f"[DEBUG] Adjusted {field}: {old_value:,.0f} -> {item[field]:,.0f}"
-                                )
-
-                        # Add metadata
-                        item["_split_adjusted"] = True
-                        item["_split_ratio"] = ratio
-                        item["_split_date"] = split["date"]
-                        item["_split_filing_date"] = split_filing_date
-                        adjusted_count += 1
-
-                except Exception as e:
-                    logger.error(f"[DEBUG] Error processing item {i}: {e}")
-
-        logger.info(
-            f"[DEBUG] Stock split adjustment complete: {adjusted_count}/{len(data)} items adjusted"
-        )
-        return data
+        """Adjusts financial data for one stock split."""
+        return self.adjust_financials_for_splits(data, [split] if split else [])
 
     def adjust_financials_for_latest_split(
         self, data: List[Dict[str, Any]], split: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
+        """Adjusts financial data for one stock split (kept for API compatibility)."""
+        return self.adjust_financials_for_splits(data, [split] if split else [])
+
+    def adjust_financials_for_splits(
+        self, data: List[Dict[str, Any]], splits: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Puts per-share values and share counts on today's share basis.
+
+        A record is adjusted by the product of every split effective after it
+        was filed: its figures are as reported in that filing, so a FY2020 row
+        of a company that split in 2021 and 2024 needs both ratios.
         """
-        Adjusts financial data for a stock split. Only data prior to the split filing date is adjusted.
-
-        Args:
-            data: List of financial data dicts (e.g., from get_income_statement)
-            split: Split info dict as returned by find_stock_splits
-
-        Returns:
-            Adjusted financial data
-        """
-        logger.info(
-            f"[DEBUG] adjust_financials_for_latest_split called with data length: {len(data) if data else 0}"
-        )
-        logger.info(f"[DEBUG] split provided: {split is not None}")
-
-        if not data:
-            logger.info("[DEBUG] No data provided, returning empty data")
+        if not data or not splits:
             return data
 
-        if not split:
-            logger.info("[DEBUG] No split provided, returning unadjusted data")
-            return data
+        events = {}
+        for split in splits:
+            ratio = split.get("ratio") if isinstance(split, dict) else None
+            cutoff = _split_cutoff(split) if isinstance(split, dict) else None
+            if not isinstance(ratio, (int, float)) or ratio <= 0 or cutoff is None:
+                logger.warning(f"Ignoring invalid stock split entry: {split}")
+                continue
+            # Polygon and SEC detection can both report the same event.
+            events[(cutoff, ratio)] = split
 
-        ratio = split["ratio"]
-        split_date = split["date"]
-        split_filing_date = split["filing_date"]  # Use filing date for adjustment logic
-        logger.info(
-            f"[DEBUG] Using split: ratio={ratio}, announcement_date={split_date}, filing_date={split_filing_date}"
-        )
-
-        # Ensure split_filing_date is in proper format for comparison
-        try:
-            from datetime import datetime
-
-            split_filing_date_obj = datetime.strptime(split_filing_date, "%Y-%m-%d")
-        except Exception as e:
-            logger.error(
-                f"[DEBUG] Error parsing split filing date '{split_filing_date}': {e}"
-            )
-            return data
-
-        adjusted_count = 0
-        for i, item in enumerate(data):
-            item_date = (
+        for item in data:
+            reported = _parse_day(item.get("filingDate")) or _parse_day(
                 item.get("date") or item.get("fiscalDateEnding") or item.get("endDate")
             )
-
-            if item_date:
-                # Parse item date for proper comparison
-                try:
-                    item_date_obj = datetime.strptime(item_date, "%Y-%m-%d")
-
-                    # Use datetime objects for comparison
-                    # IMPORTANT: We compare against the FILING DATE, not the announcement date
-                    # because the filing date represents when the split information became publicly available
-                    # Financial data should be adjusted if it's from BEFORE the filing date
-                    should_adjust = item_date_obj < split_filing_date_obj
-
-                    if should_adjust:
-                        logger.info(
-                            f"[DEBUG] Adjusting item {i}: date={item_date} (split filing date={split_filing_date})"
-                        )
-
-                        # Adjust per-share metrics
-                        for field in [
-                            "eps",
-                            "epsDiluted",
-                            "earningsPerShareBasic",
-                            "earningsPerShareDiluted",
-                        ]:
-                            if field in item and item[field] is not None:
-                                old_value = item[field]
-                                item[field] /= ratio
-                                logger.info(
-                                    f"[DEBUG] Adjusted {field}: {old_value:.2f} -> {item[field]:.2f}"
-                                )
-                            else:
-                                logger.info(
-                                    f"[DEBUG] Field {field} not present in item {i}"
-                                )
-
-                        # Adjust share count metrics
-                        for field in [
-                            "weightedAverageShsOut",
-                            "weightedAverageShsOutDil",
-                            "weightedAverageNumberOfSharesOutstandingBasic",
-                            "weightedAverageNumberOfDilutedSharesOutstanding",
-                            "commonStockSharesOutstanding",
-                        ]:
-                            if field in item and item[field] is not None:
-                                old_value = item[field]
-                                item[field] *= ratio
-                                logger.info(
-                                    f"[DEBUG] Adjusted {field}: {old_value:,.0f} -> {item[field]:,.0f}"
-                                )
-                            else:
-                                logger.info(
-                                    f"[DEBUG] Field {field} not present in item {i}"
-                                )
-
-                        # Add metadata
-                        item["_split_adjusted"] = True
-                        item["_split_ratio"] = ratio
-                        item["_split_date"] = split_date
-                        item["_split_filing_date"] = split_filing_date
-                        adjusted_count += 1
-                    else:
-                        logger.info(
-                            f"[DEBUG] Item {i} not adjusted: date={item_date} >= split filing date={split_filing_date}"
-                        )
-
-                except Exception as e:
-                    logger.error(f"[DEBUG] Error processing item {i}: {e}")
-            else:
-                logger.info(f"[DEBUG] Item {i} has no valid date field")
-
-        logger.info(
-            f"[DEBUG] Stock split adjustment complete: {adjusted_count}/{len(data)} items adjusted"
-        )
+            if reported is None:
+                continue
+            applied = sorted(
+                (cutoff, ratio, split)
+                for (cutoff, ratio), split in events.items()
+                if reported < cutoff
+            )
+            if not applied:
+                continue
+            factor = 1.0
+            for _, ratio, _ in applied:
+                factor *= ratio
+            for field in _PER_SHARE_FIELDS:
+                if isinstance(item.get(field), (int, float)):
+                    item[field] /= factor
+            for field in _SHARE_COUNT_FIELDS:
+                if isinstance(item.get(field), (int, float)):
+                    item[field] *= factor
+            latest = applied[-1][2]
+            item["_split_adjusted"] = True
+            item["_split_ratio"] = factor
+            item["_split_date"] = latest.get("date")
+            item["_split_filing_date"] = latest.get("filing_date")
         return data
 
     def clear_cache(self):
