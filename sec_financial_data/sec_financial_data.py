@@ -352,6 +352,50 @@ def _fact_span_days(start_date, end_date):
 _MIN_QUARTER_SPAN_DAYS = 75
 _MAX_QUARTER_SPAN_DAYS = 105
 
+# Sentinel: the 10-Q report has no usable discrete-quarter value for a tag.
+_NO_QUARTER_VALUE = object()
+
+
+def _ten_q_value(facts, ytd_by_start, end_date, per_share, share_count):
+    """Discrete-quarter value of one tag in a 10-Q report.
+
+    `facts` are the report's (start, span_days, value) duration facts.
+    `ytd_by_start` maps start -> {end: (filed, value)} over all 10-Q facts of
+    the tag. 10-Qs tag year-to-date facts beside (cash flow: instead of)
+    three-month ones; a YTD-only flow value becomes YTD minus the prior
+    quarter's YTD from the same fiscal-year start. Returns _NO_QUARTER_VALUE
+    when neither works; per-share and share counts are never differenced.
+    """
+    quarter = [
+        (span, value)
+        for _, span, value in facts
+        if _MIN_QUARTER_SPAN_DAYS <= span <= _MAX_QUARTER_SPAN_DAYS
+    ]
+    if quarter:
+        if per_share:
+            return max(v for _, v in quarter)
+        if share_count:
+            return min(v for _, v in quarter)
+        return max(quarter, key=lambda sv: sv[0])[1]
+    longer = [f for f in facts if f[1] > _MAX_QUARTER_SPAN_DAYS]
+    if not longer:
+        # Only a short stub period (post-IPO/spin-off): it is the whole quarter.
+        return max(facts, key=lambda f: f[1])[2]
+    if per_share or share_count:
+        return _NO_QUARTER_VALUE
+    start, _, ytd_value = max(longer, key=lambda f: f[1])
+    end_d = _parse_iso_date(end_date)
+    earlier = [
+        e for e in ytd_by_start.get(start, {}) if e < end_date and _parse_iso_date(e)
+    ]
+    if end_d is None or not earlier:
+        return _NO_QUARTER_VALUE
+    prior_end = max(earlier)
+    gap = (end_d - _parse_iso_date(prior_end)).days
+    if not _MIN_QUARTER_SPAN_DAYS <= gap <= _MAX_QUARTER_SPAN_DAYS:
+        return _NO_QUARTER_VALUE
+    return ytd_value - ytd_by_start[start][prior_end][1]
+
 
 def _sum_fiscal_year_quarters(quarters, start_date, end_date):
     """Sum of four back-to-back quarterly facts spanning exactly start..end, else None."""
@@ -1144,6 +1188,8 @@ def _get_financial_statement_data(
             "MarketableSecuritiesCurrent",
             "MarketableSecuritiesNoncurrent",
             "AvailableForSaleSecuritiesCurrent",
+            "AvailableForSaleSecuritiesDebtSecuritiesCurrent",  # ASU 2016-01 tag (ANET)
+            "AvailableForSaleSecuritiesDebtSecuritiesNoncurrent",
             "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent",
             "MinorityInterest",
             "NoncontrollingInterest",
@@ -1490,6 +1536,9 @@ def _get_financial_statement_data(
             annual_values_by_end = {}
             # 10-K filedAt -> [(start, end, value)] of its quarter-length facts.
             quarters_by_filing = {}
+            # 10-Q report key -> [(start, span, value)]; start -> {end: (filed, value)}.
+            ten_q_facts_by_key = {}
+            ten_q_ytd_by_start = {}
             for fact in facts_list:
                 fiscal_year = fact.get("fy")
                 fiscal_period = fact.get("fp")
@@ -1575,6 +1624,14 @@ def _get_financial_statement_data(
                 values_by_key.setdefault(report_instance_key, []).append(
                     (span_days, value)
                 )
+                if form_group == "10-Q" and span_days > 0:
+                    ten_q_facts_by_key.setdefault(report_instance_key, []).append(
+                        (start_date, span_days, value)
+                    )
+                    # As first reported, matching the as-reported 10-Q rows.
+                    by_end = ten_q_ytd_by_start.setdefault(start_date, {})
+                    if end_date not in by_end or filed_at < by_end[end_date][0]:
+                        by_end[end_date] = (filed_at, value)
                 if form_group == "10-K" and span_days >= _MIN_ANNUAL_SPAN_DAYS:
                     annual_values_by_end[end_date] = value
                     annual_starts_by_report.setdefault(report_instance_key, set()).add(
@@ -1614,6 +1671,21 @@ def _get_financial_statement_data(
                             ] = quarters
                         continue
                 data_dict = report_instances_data[report_instance_key]["data"]
+                ten_q_facts = ten_q_facts_by_key.get(report_instance_key)
+                # 6-K interim reports are often semiannual: keep the full span.
+                if ten_q_facts and not report_instances_data[report_instance_key][
+                    "formType"
+                ].upper().startswith("6-K"):
+                    quarter_value = _ten_q_value(
+                        ten_q_facts,
+                        ten_q_ytd_by_start,
+                        report_instance_key[1],
+                        tag in eps_tags,
+                        tag in share_count_tags,
+                    )
+                    if quarter_value is not _NO_QUARTER_VALUE:
+                        data_dict[tag] = quarter_value
+                    continue
                 if tag in eps_tags:
                     # EPS: pick the highest value
                     data_dict[tag] = max(v for _, v in values)
@@ -2475,6 +2547,7 @@ def _get_financial_statement_data(
                 alternate_tags=[
                     "ShortTermInvestments",
                     "AvailableForSaleSecuritiesCurrent",
+                    "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
                     "MarketableSecuritiesDebtMaturitiesWithinOneYearAmortizedCost",
                     "DebtSecuritiesAvailableForSaleExcludingAccruedInterestCurrent",
                     "CurrentFinancialAssets",  # IFRS
@@ -2597,6 +2670,7 @@ def _get_financial_statement_data(
                 "MarketableSecuritiesNoncurrent",
                 alternate_tags=[
                     "LongTermInvestments",
+                    "AvailableForSaleSecuritiesDebtSecuritiesNoncurrent",
                     "AvailableForSaleSecuritiesRestrictedNoncurrent",
                     "NoncurrentFinancialAssets",  # IFRS
                     "InvestmentsInSubsidiariesJointVenturesAndAssociates",  # IFRS
@@ -3430,7 +3504,7 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
-            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
+            split_data (dict | list, optional): Pre-fetched split(s) to apply. If None, will fetch the latest split.
         Returns:
             list: A list of dictionaries with income statement data.
         """
@@ -3461,7 +3535,7 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
-            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
+            split_data (dict | list, optional): Pre-fetched split(s) to apply. If None, will fetch the latest split.
         Returns:
             list: A list of dictionaries with balance sheet data.
         """
@@ -3494,7 +3568,7 @@ class SECHelper:
             limit (int): The number of recent periods to retrieve.
             report_type (str): The type of report to filter by ("10-K", "10-Q", "ALL").
                                Defaults to "ALL".
-            split_data (dict, optional): Pre-fetched split data to use. If None, will fetch split data.
+            split_data (dict | list, optional): Pre-fetched split(s) to apply. If None, will fetch the latest split.
         Returns:
             list: A list of dictionaries with cash flow statement data.
         """
@@ -3904,7 +3978,8 @@ class SECHelper:
         Args:
             data (list): List of financial data dicts (e.g., from get_income_statement).
             symbol_or_cik (str, optional): Symbol or CIK. Required if split is not provided.
-            split (dict, optional): Split info dict as returned by find_stock_splits. If not provided, will be fetched.
+            split (dict | list, optional): One split dict as returned by find_stock_splits, or
+                a list of them (all are applied cumulatively). If not provided, the latest split is fetched.
         Returns:
             list: Adjusted data.
         """
@@ -3929,7 +4004,11 @@ class SECHelper:
             split = self._get_latest_split(symbol_or_cik)
             logger.info(f"[DEBUG] _get_latest_split returned: {split}")
 
-        if not split or "ratio" not in split or "date" not in split:
+        splits = split if isinstance(split, list) else [split]
+        splits = [
+            s for s in splits if isinstance(s, dict) and "ratio" in s and "date" in s
+        ]
+        if not splits:
             logger.info(f"[DEBUG] Invalid split data: {split}")
             return data
 
@@ -3937,7 +4016,7 @@ class SECHelper:
         from .stock_splits import StockSplitDetector
 
         detector = StockSplitDetector(self.headers)
-        return detector.adjust_financials_for_latest_split(data, split)
+        return detector.adjust_financials_for_splits(data, splits)
 
     def get_stock_splits(
         self, symbol_or_cik: str, max_filings: int = 50, max_workers: int = 5
