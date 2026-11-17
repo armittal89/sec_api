@@ -110,18 +110,43 @@ def test_ten_q_cash_flow_year_to_date_is_differenced_to_the_quarter():
 
 
 def test_ten_q_value_rules():
-    ytd = {"2026-01-01": {"2026-03-31": ("2026-05-06", 10), "2026-06-30": ("2026-08-05", 25)}}
+    ytd = {
+        "2026-01-01": {
+            "2026-03-31": ("2026-05-06", 10),
+            "2026-06-30": ("2026-08-05", 25),
+        }
+    }
     # Three-month fact wins over YTD.
-    assert _ten_q_value([("2026-04-01", 90, 15), ("2026-01-01", 180, 25)], ytd, "2026-06-30", False, False) == 15
+    assert (
+        _ten_q_value(
+            [("2026-04-01", 90, 15), ("2026-01-01", 180, 25)],
+            ytd,
+            "2026-06-30",
+            False,
+            False,
+        )
+        == 15
+    )
     # YTD only: minus the prior quarter's YTD from the same start.
-    assert _ten_q_value([("2026-01-01", 180, 25)], ytd, "2026-06-30", False, False) == 15
+    assert (
+        _ten_q_value([("2026-01-01", 180, 25)], ytd, "2026-06-30", False, False) == 15
+    )
     # Prior quarter missing (gap is six months): no value rather than YTD.
     assert (
-        _ten_q_value([("2026-01-01", 272, 40)], {"2026-01-01": {"2026-03-31": ("x", 10)}}, "2026-09-30", False, False)
+        _ten_q_value(
+            [("2026-01-01", 272, 40)],
+            {"2026-01-01": {"2026-03-31": ("x", 10)}},
+            "2026-09-30",
+            False,
+            False,
+        )
         is _NO_QUARTER_VALUE
     )
     # Per-share values are never differenced.
-    assert _ten_q_value([("2026-01-01", 180, 1.78)], ytd, "2026-06-30", True, False) is _NO_QUARTER_VALUE
+    assert (
+        _ten_q_value([("2026-01-01", 180, 1.78)], ytd, "2026-06-30", True, False)
+        is _NO_QUARTER_VALUE
+    )
     # A post-IPO stub period shorter than a quarter is the whole quarter.
     assert _ten_q_value([("2026-02-15", 44, 7)], {}, "2026-03-31", False, False) == 7
 
@@ -140,9 +165,24 @@ ANET_SPLITS = [
 
 def test_all_splits_after_the_filing_are_applied():
     rows = [
-        {"date": "2020-12-31", "filingDate": "2021-02-19", "eps": 8.35, "weightedAverageShsOut": 76_000_000},
-        {"date": "2023-12-31", "filingDate": "2024-02-13", "eps": 6.75, "weightedAverageShsOut": 309_000_000},
-        {"date": "2025-12-31", "filingDate": "2026-02-17", "eps": 2.79, "weightedAverageShsOut": 1_258_000_000},
+        {
+            "date": "2020-12-31",
+            "filingDate": "2021-02-19",
+            "eps": 8.35,
+            "weightedAverageShsOut": 76_000_000,
+        },
+        {
+            "date": "2023-12-31",
+            "filingDate": "2024-02-13",
+            "eps": 6.75,
+            "weightedAverageShsOut": 309_000_000,
+        },
+        {
+            "date": "2025-12-31",
+            "filingDate": "2026-02-17",
+            "eps": 2.79,
+            "weightedAverageShsOut": 1_258_000_000,
+        },
     ]
     StockSplitDetector({}).adjust_financials_for_splits(rows, ANET_SPLITS)
     assert abs(rows[0]["eps"] - 8.35 / 16) < 1e-9
