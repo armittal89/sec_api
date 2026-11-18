@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from typing import Optional, Dict, Any, List
+import xml.etree.ElementTree as ET
+
+from .share_class_eps import fetch_class_eps_facts, preferred_class_member
 
 # Base URLs for SEC EDGAR APIs
 SEC_BASE_URL = "https://www.sec.gov"
@@ -94,11 +97,17 @@ TAG_MAPPINGS = {
     # EPS tags
     "eps": [
         "EarningsPerShareBasic",
+        "EarningsPerShareBasicAndDiluted",
+        "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax",  # KKR 2013-17
+        "NetIncomeLossPerOutstandingLimitedPartnershipAndGeneralPartnershipUnitBasicAndDiluted",  # ARLP
         "BasicEarningsLossPerShare",  # IFRS
         "EarningsPerShare",  # IFRS
     ],
     "epsDiluted": [
         "EarningsPerShareDiluted",
+        "EarningsPerShareBasicAndDiluted",
+        "NetIncomeLossNetOfTaxPerOutstandingLimitedPartnershipUnitDiluted",
+        "NetIncomeLossPerOutstandingLimitedPartnershipAndGeneralPartnershipUnitBasicAndDiluted",
         "DilutedEarningsLossPerShare",  # IFRS
     ],
     # Shares Outstanding tags
@@ -234,6 +243,36 @@ _DISCONTINUED_OPERATIONS_TAGS = [
     "IncomeLossFromDiscontinuedOperationsNetOfTax",
     "NetIncomeLossFromDiscontinuedOperationsNetOfTax",
 ]
+
+# EPS field -> (continuing-operations tags, discontinued-operations tags) for
+# filers that tag no total EPS (ABNB, MNST).
+_CONTINUING_EPS_TAGS = {
+    "eps": (
+        (
+            "IncomeLossFromContinuingOperationsPerBasicShare",
+            "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare",
+        ),
+        (
+            "IncomeLossFromDiscontinuedOperationsNetOfTaxPerBasicShare",
+            "IncomeLossFromDiscontinuedOperationsNetOfTaxPerBasicAndDilutedShare",
+            # Taxonomy 2022+ names (AGL).
+            "DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerBasicShare",
+            "DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerBasicAndDilutedShare",
+        ),
+    ),
+    "epsDiluted": (
+        (
+            "IncomeLossFromContinuingOperationsPerDilutedShare",
+            "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare",
+        ),
+        (
+            "IncomeLossFromDiscontinuedOperationsNetOfTaxPerDilutedShare",
+            "IncomeLossFromDiscontinuedOperationsNetOfTaxPerBasicAndDilutedShare",
+            "DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerDilutedShare",
+            "DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerBasicAndDilutedShare",
+        ),
+    ),
+}
 
 
 def _annual_fact_values(values, prior_year_value=None):
@@ -691,6 +730,30 @@ def _get_depreciation_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     return value if value != 0 else default
 
 
+_DILUTED_EPS_TAGS = frozenset(
+    TAG_MAPPINGS["epsDiluted"] + list(_CONTINUING_EPS_TAGS["epsDiluted"][0])
+)
+_EPS_TAGS = frozenset(
+    TAG_MAPPINGS["eps"]
+    + TAG_MAPPINGS["epsDiluted"]
+    + [tag for pair in _CONTINUING_EPS_TAGS.values() for tags in pair for tag in tags]
+)
+
+
+def _get_eps_value(data_dict: Dict[str, Any], field: str) -> Any:
+    """Total EPS for `field`, else continuing- plus discontinued-operations EPS."""
+    value = _get_value_from_tags(data_dict, TAG_MAPPINGS[field], default=0)
+    if value != 0:
+        return value
+    continuing_tags, discontinued_tags = _CONTINUING_EPS_TAGS[field]
+    continuing = _get_first_available_value(data_dict, list(continuing_tags), None)
+    if continuing is None:
+        return 0
+    return continuing + _get_first_available_value(
+        data_dict, list(discontinued_tags), 0
+    )
+
+
 def _get_first_available_value(
     data_dict: Dict[str, Any], tags: List[str], default: Any = 0
 ) -> Any:
@@ -727,6 +790,78 @@ def _rate_limit():
     if elapsed < REQUEST_INTERVAL:
         time.sleep(REQUEST_INTERVAL - elapsed)
     LAST_REQUEST_TIME = time.time()
+
+
+_SEC_FETCH_ATTEMPTS = 3
+_SEC_RETRY_BACKOFF_SECONDS = 2
+_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _fetch_sec_bytes(url, headers):
+    """Rate-limited GET of an SEC URL, retrying throttling/5xx; raises on HTTP errors."""
+    for attempt in range(1, _SEC_FETCH_ATTEMPTS):
+        _rate_limit()
+        try:
+            response = requests.get(url, headers=headers, timeout=60)
+            if response.status_code not in _RETRYABLE_HTTP_STATUSES:
+                response.raise_for_status()
+                return response.content
+            logger.info(f"SEC returned {response.status_code} for {url}; retrying")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            logger.info(f"SEC request failed for {url}: {e}; retrying")
+        # SEC answers bursts with 503/429 for a few seconds.
+        time.sleep(_SEC_RETRY_BACKOFF_SECONDS * attempt)
+    _rate_limit()
+    response = requests.get(url, headers=headers, timeout=60)
+    response.raise_for_status()
+    return response.content
+
+
+def _share_class_eps(cik, report, symbol, headers):
+    """(basic, diluted) EPS of the symbol's share class from the report's own filing, None if absent."""
+    accession = report.get("accessionNumber")
+    if not accession:
+        return None, None
+    try:
+        class_facts = fetch_class_eps_facts(
+            cik, accession, lambda url: _fetch_sec_bytes(url, headers), _EPS_TAGS
+        )
+    except (requests.exceptions.RequestException, ValueError, ET.ParseError) as e:
+        logger.warning(
+            f"Share-class EPS unavailable for {symbol} filing {accession}: {e}"
+        )
+        return None, None
+
+    def _matches_report_span(fact):
+        span = _fact_span_days(fact["start"], fact["end"])
+        if report["formGroup"] == "10-K":
+            return span >= _MIN_ANNUAL_SPAN_DAYS
+        # Discrete quarter only, like the 10-Q rows; YTD EPS can't be differenced.
+        return _MIN_QUARTER_SPAN_DAYS <= span <= _MAX_QUARTER_SPAN_DAYS
+
+    period_facts = [
+        fact
+        for fact in class_facts
+        if fact["end"] == report["endDate"] and _matches_report_span(fact)
+    ]
+    member = preferred_class_member(
+        [fact["member"] for fact in period_facts],
+        symbol if isinstance(symbol, str) else "",
+    )
+    if member is None:
+        return None, None
+
+    member_data = {
+        fact["concept"]: fact["value"]
+        for fact in period_facts
+        if fact["member"] == member
+    }
+    basic = _get_eps_value(member_data, "eps")
+    diluted = _get_eps_value(member_data, "epsDiluted")
+    if diluted == 0 and not any(tag in member_data for tag in _DILUTED_EPS_TAGS):
+        # Filers without dilutive securities report basic EPS only (BRK).
+        diluted = basic
+    return basic or None, diluted or None
 
 
 # Manual TTL cache (not lru_cache) keyed by headers_tuple: a long-running process
@@ -964,6 +1099,8 @@ def _get_financial_statement_data(
     path (dimensional-context parsing), not another TAG_MAPPINGS entry -
     out of scope for now; documented here so it isn't re-derived from
     scratch next time a heavily-segmented conglomerate surfaces this.
+    Exception: missing EPS is read per share class from the row's own
+    filing instance (see share_class_eps.py).
 
     Args:
         symbol (str): The stock ticker symbol (e.g., "AAPL").
@@ -1064,6 +1201,16 @@ def _get_financial_statement_data(
             "DisposalGroupIncludingDiscontinuedOperationDeferredRevenueCurrent",
             "EarningsPerShareBasic",
             "EarningsPerShareDiluted",
+            "EarningsPerShareBasicAndDiluted",
+            "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax",
+            "NetIncomeLossNetOfTaxPerOutstandingLimitedPartnershipUnitDiluted",
+            "NetIncomeLossPerOutstandingLimitedPartnershipAndGeneralPartnershipUnitBasicAndDiluted",
+            *(
+                tag
+                for pair in _CONTINUING_EPS_TAGS.values()
+                for tags in pair
+                for tag in tags
+            ),
             "FinanceLeaseInterestExpense",
             "FinancialGuaranteeInsuranceContractsAcceleratedPremiumRevenueAmount",
             "GeneralAndAdministrativeExpense",
@@ -1504,14 +1651,7 @@ def _get_financial_statement_data(
     report_instances_data = {}
 
     # Define EPS and share count tags for special handling
-    eps_tags = {
-        "EarningsPerShareBasic",
-        "EarningsPerShareDiluted",
-        "eps",
-        "epsDiluted",
-        "earningsPerShareBasic",
-        "earningsPerShareDiluted",
-    }
+    eps_tags = set(_EPS_TAGS)
     share_count_tags = {
         "WeightedAverageShsOut",
         "WeightedAverageShsOutDil",
@@ -1595,6 +1735,7 @@ def _get_financial_statement_data(
                         "filedAt": filed_at,
                         "endDate": end_date,
                         "startDate": start_date,
+                        "accessionNumber": fact.get("accn"),
                         "data": {},
                     }
                 elif start_date and (
@@ -2469,9 +2610,19 @@ def _get_financial_statement_data(
                     # keeps the old operating + interest + other formula.
                     incomeBeforeTax += netInterestIncome
 
-        # EPS: Use centralized TAG_MAPPINGS
-        eps = _get_value_from_tags(data, TAG_MAPPINGS["eps"], default=0)
-        epsDiluted = _get_value_from_tags(data, TAG_MAPPINGS["epsDiluted"], default=0)
+        eps = _get_eps_value(data, "eps")
+        epsDiluted = _get_eps_value(data, "epsDiluted")
+        if (
+            statement_type == "income_statement"
+            and not using_ifrs
+            and (eps == 0 or epsDiluted == 0)
+            and netIncome != 0
+        ):
+            class_eps, class_eps_diluted = _share_class_eps(
+                cik, period_details, symbol_or_cik, headers
+            )
+            eps = eps or class_eps or 0
+            epsDiluted = epsDiluted or class_eps_diluted or 0
 
         # Weighted Average Shares: Use centralized TAG_MAPPINGS
         weightedAverageShsOut = _get_value_from_tags(
