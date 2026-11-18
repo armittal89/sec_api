@@ -183,8 +183,11 @@ TAG_MAPPINGS = {
         "EquityAttributableToOwnersOfParent",  # IFRS
     ],
     # Cash Flow tags
+    # The total (incl. discontinued operations) wins; some 10-Ks tag only the
+    # continuing-operations total (COST FY2017/18).
     "operatingCashFlow": [
         "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
         "OperatingCashFlow",
         "NetOperatingCashFlow",
         "CashFlowsFromUsedInOperatingActivities",  # IFRS
@@ -192,10 +195,12 @@ TAG_MAPPINGS = {
     ],
     "investingCashFlow": [
         "NetCashProvidedByUsedInInvestingActivities",
+        "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations",
         "CashFlowsFromUsedInInvestingActivities",  # IFRS
     ],
     "financingCashFlow": [
         "NetCashProvidedByUsedInFinancingActivities",
+        "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations",
         "CashFlowsFromUsedInFinancingActivities",  # IFRS
     ],
     "capex": [
@@ -1389,7 +1394,9 @@ def _get_financial_statement_data(
             "IncomeTaxesPaidNet",
             "InterestPaidNet",
             "NetCashProvidedByUsedInFinancingActivities",
+            "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations",
             "NetCashProvidedByUsedInInvestingActivities",
+            "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations",
             "NetCashProvidedByUsedInOperatingActivities",
             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
             "NetIncomeLoss",
