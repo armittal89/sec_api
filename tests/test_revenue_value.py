@@ -7,6 +7,7 @@ from sec_financial_data.sec_financial_data import (
 
 EXCL = "RevenueFromContractWithCustomerExcludingAssessedTax"
 INCL = "RevenueFromContractWithCustomerIncludingAssessedTax"
+NON_CONTRACT = "RevenueNotFromContractWithCustomer"
 PRICE_RISK = "GainLossOnPriceRiskDerivativeInstrumentsNotDesignatedAsHedgingInstruments"
 B = 1_000_000_000
 
@@ -20,6 +21,23 @@ def test_identity_picks_revenues_over_partial_contract_revenue():
         "BenefitsLossesAndExpenses": 115.20 * B,
     }
     assert _get_revenue_value(data) == 117.76 * B
+
+
+def test_contract_plus_non_contract_picks_total_revenues():
+    # BRK FY2025: premiums are non-contract revenue; no operating income tag.
+    data = {
+        EXCL: 247.244 * B,
+        NON_CONTRACT: 124.199 * B,
+        "Revenues": 371.443 * B,
+        "CostsAndExpenses": 289.0 * B,
+    }
+    assert _get_revenue_value(data) == 371.443 * B
+
+
+def test_contract_plus_non_contract_without_matching_candidate_falls_through():
+    # Sum matches nothing: tag order still decides (RSG-style close pair).
+    data = {EXCL: 16.032 * B, NON_CONTRACT: 0.5 * B, "Revenues": 18.418 * B}
+    assert _get_revenue_value(data) == 16.032 * B
 
 
 def test_identity_picks_contract_over_gross_revenues():
