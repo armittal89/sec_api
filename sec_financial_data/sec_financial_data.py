@@ -601,6 +601,8 @@ _CONTRACT_REVENUE_TAGS = (
     "RevenueFromContractWithCustomerExcludingAssessedTax",
     "RevenueFromContractWithCustomerIncludingAssessedTax",
 )
+# Insurance premiums, leases, interest: revenue outside ASC 606.
+_NON_CONTRACT_REVENUE_TAG = "RevenueNotFromContractWithCustomer"
 # Total-cost tags for the revenue = operating income + total costs identity.
 # Not `OperatingExpenses`: many filers exclude cost of sales from it, so the
 # sum is gross profit (DELL FY2018 matched its $19.86B services line).
@@ -651,8 +653,10 @@ def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     line or a segment fact for BLK/GIS, contract revenue is only the
     services line for HUM (premiums are insurance), and RSG/HAS tag a gross
     pre-elimination figure as `Revenues`. So: (1) the candidate matching
-    operating income + total costs; else (2) the largest candidate when the
-    preferred one is under half of it; else (3) the first by tag order.
+    contract + non-contract revenue (BRK FY2025: $247.2B + $124.2B =
+    `Revenues` $371.4B); else (2) the candidate matching operating income +
+    total costs; else (3) the largest candidate when the preferred one is
+    under half of it; else (4) the first by tag order.
     The tax-included contract tag is a candidate only without the
     tax-excluded one (PM: $80.7B with excise vs $31.8B net revenue), and
     component lines never are.
@@ -664,6 +668,14 @@ def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     candidates.add(preferred)
     if len(candidates) == 1:
         return preferred
+
+    contract = _get_value_from_tags(data_dict, list(_CONTRACT_REVENUE_TAGS), default=None)
+    non_contract = data_dict.get(_NON_CONTRACT_REVENUE_TAG)
+    if contract and non_contract:
+        implied = contract + non_contract
+        closest = min(candidates, key=lambda value: abs(value - implied))
+        if abs(closest - implied) <= _REVENUE_IDENTITY_TOLERANCE * abs(implied):
+            return closest
 
     operating_income = data_dict.get("OperatingIncomeLoss")
     if operating_income is not None:
