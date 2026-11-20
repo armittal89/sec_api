@@ -137,6 +137,11 @@ TAG_MAPPINGS = {
     ],
     "interestExpense": [
         "InterestExpense",
+        # 2024+ taxonomy name for non-bank interest expense.
+        "InterestExpenseNonoperating",
+        "InterestAndDebtExpense",
+        # INTU tags only this (FY2026 256M).
+        "InterestExpenseDebt",
         "FinanceCosts",  # IFRS
         "AdjustmentsForFinanceCosts",  # IFRS
     ],
@@ -1244,6 +1249,9 @@ def _get_financial_statement_data(
             "IncreaseDecreaseInDeferredRevenue",
             "InsuranceServicesRevenue",
             "InterestExpense",
+            "InterestExpenseNonoperating",
+            "InterestAndDebtExpense",
+            "InterestExpenseDebt",
             "InterestIncome",
             "InterestIncomeOther",
             "InterestIncomeExpenseNet",
@@ -1335,6 +1343,8 @@ def _get_financial_statement_data(
             "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",  # Alternative tag used by LEN in recent years
             "IntangibleAssets",
             "IntangibleAssetsNetExcludingGoodwill",
+            "FiniteLivedIntangibleAssetsNet",
+            "IndefiniteLivedIntangibleAssetsExcludingGoodwill",
             "Inventory",
             "InventoryNet",
             "InventoryOperativeBuilders",  # Alternative tag used by LEN
@@ -2831,6 +2841,12 @@ def _get_financial_statement_data(
                     "IntangibleAssetsOtherThanGoodwill",  # IFRS
                 ],
             )
+            if intangibleAssets == 0:
+                # No total tag: INTU tags only the finite-lived net balance
+                # (Q1 FY2027 4.52B), so goodwill alone understated intangibles.
+                intangibleAssets = get_val("FiniteLivedIntangibleAssetsNet") + get_val(
+                    "IndefiniteLivedIntangibleAssetsExcludingGoodwill"
+                )
 
             goodwillAndIntangibleAssets = get_val("GoodwillAndIntangibleAssets")
             if goodwillAndIntangibleAssets == 0:
@@ -2924,10 +2940,14 @@ def _get_financial_statement_data(
                     "ShorttermBorrowings",  # IFRS
                 ],
             )
+            # Current maturities of long-term debt (INTU FY2026 1.249B).
+            longTermDebtCurrent = get_val(
+                "LongTermDebtCurrent", alternate_tags=["LongTermDebtCurrentMaturities"]
+            )
             if shortTermDebt == 0:
                 component_sum = (
                     get_val("CommercialPaper")
-                    + get_val("LongTermDebtCurrentMaturities")
+                    + longTermDebtCurrent
                     + get_val("NotesPayableCurrent")
                     + get_val("ShortTermBorrowings")
                 )
@@ -2993,6 +3013,14 @@ def _get_financial_statement_data(
                     "BorrowingsAndDebtInstruments",  # IFRS
                 ],
             )
+            # LongTermDebt includes current maturities, which shortTermDebt
+            # already carries.
+            if (
+                get_val("LongTermDebtNoncurrent") == 0
+                and longTermDebt_val == get_val("LongTermDebt")
+                and 0 < longTermDebtCurrent < longTermDebt_val
+            ):
+                longTermDebt_val -= longTermDebtCurrent
             capitalLeaseObligationsNonCurrent = get_val(
                 "OperatingLeaseLiabilityNoncurrent",
                 alternate_tags=[
