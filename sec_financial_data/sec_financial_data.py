@@ -674,7 +674,9 @@ def _get_revenue_value(data_dict: Dict[str, Any], default: Any = 0) -> Any:
     if len(candidates) == 1:
         return preferred
 
-    contract = _get_value_from_tags(data_dict, list(_CONTRACT_REVENUE_TAGS), default=None)
+    contract = _get_value_from_tags(
+        data_dict, list(_CONTRACT_REVENUE_TAGS), default=None
+    )
     non_contract = data_dict.get(_NON_CONTRACT_REVENUE_TAG)
     if contract and non_contract:
         implied = contract + non_contract
@@ -1354,6 +1356,7 @@ def _get_financial_statement_data(
             "LiabilitiesCurrent",
             "LiabilitiesNoncurrent",
             "LongTermDebt",  # Alternative tag used by LEN
+            "LongTermDebtAndCapitalLeaseObligations",
             "LongTermDebtCurrent",
             "LongTermDebtCurrentMaturities",
             "LongTermDebtCurrentMaturitiesAndOtherShortTermDebt",
@@ -2100,12 +2103,23 @@ def _get_financial_statement_data(
     # Widening the date tolerance removed that accidental filter, so it is
     # replaced by (a) the same >= 2 non-zero key-items threshold Step 2
     # uses, and (b) dropping a tolerant match that sits within the tolerance
-    # window of an exact match (it is a ghost of that real period).
+    # window of a data-rich exact match (it is a ghost of that real period).
+    # The reverse also happens: ADBE's FY2019 10-K tags ASC 606 opening
+    # balances at 2018-12-01 (receivables, deferred revenue, retained
+    # earnings - none of the key items), which lands exactly on the dominant
+    # "12-01" while the real FY2018 sheet sits at 2018-11-30. A sparse exact
+    # match therefore yields to a data-rich report inside the window.
     if fiscal_year_end_md:
 
         def _distance_to_year_end(report):
             return _circular_day_of_year_distance(
                 report["endDate"][5:], fiscal_year_end_md
+            )
+
+        def _has_key_data(report):
+            return (
+                _count_nonzero_key_items(report.get("data", {}), key_items_to_check)
+                >= 2
             )
 
         in_window = []
@@ -2114,25 +2128,31 @@ def _get_financial_statement_data(
             if distance is not None and distance <= _FISCAL_YEAR_END_TOLERANCE_DAYS:
                 in_window.append((report, distance))
 
-        exact_end_dates = [
-            _parse_iso_date(r["endDate"]) for r, d in in_window if d == 0
+        rich_end_dates = [
+            (_parse_iso_date(r["endDate"]), d) for r, d in in_window if _has_key_data(r)
         ]
 
-        def _is_ghost_of_exact_match(report):
+        def _near_rich_report(report, exact_only):
             end_d = _parse_iso_date(report["endDate"])
             return end_d is not None and any(
-                exact is not None
-                and abs((end_d - exact).days) <= _FISCAL_YEAR_END_TOLERANCE_DAYS
-                for exact in exact_end_dates
+                rich is not None
+                and (d == 0 or not exact_only)
+                and rich != end_d
+                and abs((end_d - rich).days) <= _FISCAL_YEAR_END_TOLERANCE_DAYS
+                for rich, d in rich_end_dates
             )
 
         ten_k_reports = [
             r
             for r, distance in in_window
-            if distance == 0
+            if (
+                distance == 0
+                and (_has_key_data(r) or not _near_rich_report(r, exact_only=False))
+            )
             or (
-                _count_nonzero_key_items(r.get("data", {}), key_items_to_check) >= 2
-                and not _is_ghost_of_exact_match(r)
+                distance != 0
+                and _has_key_data(r)
+                and not _near_rich_report(r, exact_only=True)
             )
         ]
 
@@ -2347,11 +2367,23 @@ def _get_financial_statement_data(
         # end date is genuinely close to the kept one - otherwise it's a
         # different real period whose fy label was inherited from a later
         # filing's comparative disclosure, and must be kept.
+        # A report with key data beats a later sparse one: ADBE's FY2019
+        # 10-K tags ASC 606 opening balances at 2018-12-01 (no key items),
+        # one day after the real FY2018 sheet, and Step 6.05 relabels it
+        # FY2018.
         final_deduped_reports = []
         for fiscal_year, reports in reports_by_fiscal_year.items():
             if len(reports) > 1:
-                # Sort by end date (descending), then by filing date (descending)
-                reports.sort(key=lambda r: (r["endDate"], r["filedAt"]), reverse=True)
+                # Key data first, then end date, then filing date (descending)
+                reports.sort(
+                    key=lambda r: (
+                        _count_nonzero_key_items(r.get("data", {}), key_items_to_check)
+                        >= 2,
+                        r["endDate"],
+                        r["filedAt"],
+                    ),
+                    reverse=True,
+                )
                 kept_reports = [reports[0]]
                 kept_end_date = _parse_iso_date(reports[0]["endDate"])
                 for candidate in reports[1:]:
@@ -3008,6 +3040,9 @@ def _get_financial_statement_data(
                 "LongTermDebtNoncurrent",
                 alternate_tags=[
                     "LongTermDebt",
+                    # Noncurrent debt + lease total; ADBE's only noncurrent
+                    # debt tag FY2012-2021 (FY2018 4.12B).
+                    "LongTermDebtAndCapitalLeaseObligations",
                     "NoncurrentBorrowings",  # IFRS
                     "LongtermBorrowings",  # IFRS
                     "BorrowingsAndDebtInstruments",  # IFRS
