@@ -221,6 +221,11 @@ TAG_MAPPINGS = {
         # trivially equals operatingCashFlow instead of being computed).
         "PurchaseOfPropertyPlantAndEquipment",  # IFRS
     ],
+    "intangibleCapex": [
+        "PaymentsToAcquireIntangibleAssets",
+        "CapitalizedComputerSoftwareAdditions",
+        "PurchaseOfIntangibleAssets",  # IFRS
+    ],
 }
 
 # Key items for data completeness checking by statement type
@@ -1335,6 +1340,7 @@ def _get_financial_statement_data(
             "DeferredTaxAssetsNet",
             "DeferredTaxAssetsPropertyPlantAndEquipment",
             "DeferredTaxLiabilitiesNoncurrent",
+            "DeferredIncomeTaxLiabilitiesNet",
             "DeferredTaxLiabilitiesPropertyPlantAndEquipment",
             "Depreciation",
             "DepreciationAndAmortization",
@@ -1347,12 +1353,15 @@ def _get_financial_statement_data(
             "IntangibleAssetsNetExcludingGoodwill",
             "FiniteLivedIntangibleAssetsNet",
             "IndefiniteLivedIntangibleAssetsExcludingGoodwill",
+            "IndefiniteLivedFranchiseRights",
+            "OtherIntangibleAssetsNet",
             "Inventory",
             "InventoryNet",
             "InventoryOperativeBuilders",  # Alternative tag used by LEN
             "InventoryAdjustments",  # Alternative tag used by LEN in recent years
             "AccountsAndNotesReceivableNet",  # Alternative tag used by LEN in recent years
             "Liabilities",
+            "LiabilitiesAndStockholdersEquity",
             "LiabilitiesCurrent",
             "LiabilitiesNoncurrent",
             "LongTermDebt",  # Alternative tag used by LEN
@@ -1376,6 +1385,7 @@ def _get_financial_statement_data(
             "OtherAccountsPayableCurrent",
             "OtherAssetsCurrent",
             "OtherAssetsNoncurrent",
+            "OtherLiabilitiesNoncurrent",
             "PaymentsToAcquirePropertyPlantAndEquipment",
             "PreferredStockValue",
             "PrepaidExpenseCurrent",
@@ -1387,6 +1397,7 @@ def _get_financial_statement_data(
             "PropertyPlantAndEquipmentGross",
             "PropertyPlantAndEquipmentNet",
             "RedeemablePreferredStockCarryingAmount",
+            "RedeemableNoncontrollingInterestEquityCarryingAmount",
             "RetainedEarnings",
             "RetainedEarningsAccumulatedDeficit",
             "ShortTermBorrowings",
@@ -1438,6 +1449,7 @@ def _get_financial_statement_data(
             "PaymentsOfDividendsCommonStock",
             "PaymentsOfDividendsPreferredStock",
             "PaymentsToAcquireBusinessesNetOfCashAcquired",
+            "PaymentsToAcquireIntangibleAssets",
             "PaymentsToAcquirePropertyPlantAndEquipment",
             "PaymentsToAcquireProductiveAssets",
             "PaymentsToAcquireOtherProductiveAssets",
@@ -2874,11 +2886,21 @@ def _get_financial_statement_data(
                 ],
             )
             if intangibleAssets == 0:
+                # OtherIntangibleAssetsNet already includes the finite-lived
+                # assets and other indefinite-lived assets; franchise rights
+                # are presented separately (CMCSA). Do not add the broader
+                # indefinite-lived total to this subtotal a second time.
+                other_intangibles = get_val("OtherIntangibleAssetsNet")
+                franchise_rights = get_val("IndefiniteLivedFranchiseRights")
                 # No total tag: INTU tags only the finite-lived net balance
                 # (Q1 FY2027 4.52B), so goodwill alone understated intangibles.
-                intangibleAssets = get_val("FiniteLivedIntangibleAssetsNet") + get_val(
-                    "IndefiniteLivedIntangibleAssetsExcludingGoodwill"
-                )
+                if other_intangibles != 0:
+                    intangibleAssets = other_intangibles + franchise_rights
+                else:
+                    intangibleAssets = get_val("FiniteLivedIntangibleAssetsNet") + (
+                        get_val("IndefiniteLivedIntangibleAssetsExcludingGoodwill")
+                        or franchise_rights
+                    )
 
             goodwillAndIntangibleAssets = get_val("GoodwillAndIntangibleAssets")
             if goodwillAndIntangibleAssets == 0:
@@ -3073,6 +3095,7 @@ def _get_financial_statement_data(
             deferredTaxLiabilitiesNonCurrent = get_val(
                 "DeferredTaxLiabilitiesNoncurrent",
                 alternate_tags=[
+                    "DeferredIncomeTaxLiabilitiesNet",
                     "DeferredTaxLiabilities",  # IFRS
                 ],
             )
@@ -3102,11 +3125,24 @@ def _get_financial_statement_data(
                 "Liabilities",
                 alternate_tags=[
                     "TotalLiabilities",
-                    "LiabilitiesAndStockholdersEquity",
                 ],
             )
             if totalLiabilities == 0:
-                totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities
+                consolidated_equity = get_val(
+                    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+                )
+                reported_assets = get_val(
+                    "Assets", alternate_tags=["TotalAssets", "LiabilitiesAndStockholdersEquity"]
+                )
+                if consolidated_equity != 0 and reported_assets != 0:
+                    # Mezzanine equity is outside both liabilities and equity.
+                    totalLiabilities = (
+                        reported_assets
+                        - consolidated_equity
+                        - get_val("RedeemableNoncontrollingInterestEquityCarryingAmount")
+                    )
+                else:
+                    totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities
 
             # EQUITY
             treasuryStock = get_val(
@@ -3361,6 +3397,21 @@ def _get_financial_statement_data(
             investmentsInPropertyPlantAndEquipment = _get_value_from_tags(
                 data, TAG_MAPPINGS["capex"], default=0
             )  # Typically negative
+            intangibleCapitalExpenditure = abs(
+                _get_value_from_tags(data, TAG_MAPPINGS["intangibleCapex"], default=0)
+            )
+            # PaymentsToAcquireProductiveAssets is a broader reinvestment
+            # total. Only add intangible spending when it is separate from
+            # the selected capex tag (or when no other capex is reported).
+            selected_capex_tag = next(
+                (tag for tag in TAG_MAPPINGS["capex"] if data.get(tag)), None
+            )
+            if selected_capex_tag in (
+                "PaymentsToAcquireProductiveAssets",
+                "PaymentsToAcquireOtherProductiveAssets",
+                "CapitalizedComputerSoftwareAdditions",
+            ):
+                intangibleCapitalExpenditure = 0
             acquisitionsNet_cf = get_val(
                 "PaymentsToAcquireBusinessesNetOfCashAcquired",
                 alternate_tags=[
@@ -3522,8 +3573,9 @@ def _get_financial_statement_data(
             )  # Make positive
             freeCashFlow_cf = (
                 netCashProvidedByOperatingActivities
-                - investmentsInPropertyPlantAndEquipment
-            )  # Capex is negative
+                - capitalExpenditure_cf
+                - intangibleCapitalExpenditure
+            )
 
             incomeTaxesPaid_cf = get_val("IncomeTaxesPaidNet")
             interestPaid_cf = get_val("InterestPaidNet")
@@ -3566,6 +3618,7 @@ def _get_financial_statement_data(
                 "cashAtBeginningOfPeriod": cashAtBeginningOfPeriod_cf,
                 "operatingCashFlow": operatingCashFlow_cf,
                 "capitalExpenditure": capitalExpenditure_cf,
+                "intangibleCapitalExpenditure": intangibleCapitalExpenditure,
                 "freeCashFlow": freeCashFlow_cf,
                 "incomeTaxesPaid": incomeTaxesPaid_cf,
                 "interestPaid": interestPaid_cf,
