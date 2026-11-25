@@ -1352,6 +1352,9 @@ def _get_financial_statement_data(
             "IntangibleAssets",
             "IntangibleAssetsNetExcludingGoodwill",
             "FiniteLivedIntangibleAssetsNet",
+            "IntangibleAssetsNetIncludingGoodwill",  # LRCX 10-Qs: one combined line
+            # FISV from its Q2 2026 10-Q: intangibles incl. software for sale
+            "IntangibleAssetFiniteLivedAndCapitalizedCostSoftwareToBeSoldLeasedOrMarketedAfterAccumulatedAmortization",
             "IndefiniteLivedIntangibleAssetsExcludingGoodwill",
             "IndefiniteLivedFranchiseRights",
             "OtherIntangibleAssetsNet",
@@ -1443,6 +1446,11 @@ def _get_financial_statement_data(
             "OtherNoncashIncomeExpense",
             "PaymentsForPurchasesOfInvestments",
             "PaymentsForRepurchaseOfCommonStock",
+            "PaymentsForRepurchaseOfEquity",
+            # Equity-statement treasury purchases: FISV tags its cash-flow
+            # buyback line with a custom tag from 2019 (absent in companyfacts).
+            "TreasuryStockValueAcquiredCostMethod",
+            "StockRepurchasedDuringPeriodValue",  # MS: retired, not treasury
             "PaymentsForRepurchaseOfPreferredStock",
             "PaymentsOfDividends",
             "PaymentsOfOrdinaryDividends",
@@ -2897,14 +2905,26 @@ def _get_financial_statement_data(
                 if other_intangibles != 0:
                     intangibleAssets = other_intangibles + franchise_rights
                 else:
-                    intangibleAssets = get_val("FiniteLivedIntangibleAssetsNet") + (
+                    intangibleAssets = get_val(
+                        "FiniteLivedIntangibleAssetsNet",
+                        alternate_tags=[
+                            "IntangibleAssetFiniteLivedAndCapitalizedCostSoftwareToBeSoldLeasedOrMarketedAfterAccumulatedAmortization",
+                        ],
+                    ) + (
                         get_val("IndefiniteLivedIntangibleAssetsExcludingGoodwill")
                         or franchise_rights
                     )
 
             goodwillAndIntangibleAssets = get_val("GoodwillAndIntangibleAssets")
             if goodwillAndIntangibleAssets == 0:
-                goodwillAndIntangibleAssets = goodwill + intangibleAssets
+                # The combined US-GAAP tag fills components missing from a
+                # 10-Q (MAR, LRCX) but is narrower for some filers (ALL
+                # 2023: 0.97B vs 4.33B of goodwill + intangibles), so the
+                # larger of the two wins.
+                goodwillAndIntangibleAssets = max(
+                    goodwill + intangibleAssets,
+                    get_val("IntangibleAssetsNetIncludingGoodwill"),
+                )
 
             longTermInvestments = get_val(
                 "MarketableSecuritiesNoncurrent",
@@ -3482,6 +3502,12 @@ def _get_financial_statement_data(
                 "PaymentsForRepurchaseOfCommonStock",
                 alternate_tags=[
                     "PaymentsToAcquireOrRedeemEntitysShares",  # IFRS
+                    "PaymentsForRepurchaseOfEquity",
+                    # Last resort: the equity statement's treasury purchases.
+                    # FISV's 2019+ cash-flow line is a custom tag, so buybacks
+                    # read 0 (FY2025 5.60B).
+                    "TreasuryStockValueAcquiredCostMethod",
+                    "StockRepurchasedDuringPeriodValue",  # MS: retired shares
                 ],
             )  # Typically negative
             netCommonStockIssuance = (
